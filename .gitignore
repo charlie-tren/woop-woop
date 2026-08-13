@@ -1,0 +1,5 @@
+data/*.osm.pbf
+data/*.npy
+data/*.npz
+__pycache__/
+.venv/
