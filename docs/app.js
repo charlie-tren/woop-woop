@@ -12,9 +12,9 @@ const FLOOR = 10;   // in step_m units: draw nothing closer than 500 m to someth
 // town. Marked as an estimate in the UI because it IS one: the real version asks a
 // routing engine which roads exist and how fast they are.
 const MODES = {
-  foot: { label: "on foot", kmh: 4.5, detour: 0.80 },
-  bike: { label: "by bike", kmh: 15.0, detour: 0.75 },
-  car: { label: "by car", kmh: 70.0, detour: 0.70 },
+  foot: { label: "Walk", verb: "walk", kmh: 4.5, detour: 0.80 },
+  bike: { label: "Ride", verb: "ride", kmh: 15.0, detour: 0.75 },
+  car: { label: "Drive", verb: "drive", kmh: 70.0, detour: 0.70 },
 };
 
 const state = {
@@ -54,15 +54,40 @@ async function load() {
   return overlayURL();
 }
 
-/* Colour the field so the map shows WHERE the empty country is, not just one pin. */
+/* Colour the field so the map shows WHERE the empty country is, not just one pin.
+ *
+ * Drawn at a FRACTION of the data resolution. The grid is 1977x3112, and handing
+ * Leaflet a 6-megapixel image means the browser recomposites all of it on every pan
+ * and zoom frame, which is what made the map feel heavy. The full-resolution grid is
+ * still what gets measured - this is only what gets looked at.
+ *
+ * Downsampling takes the MAXIMUM of each block, not the average. A remote spot is a
+ * few bright cells surrounded by dark ones, so averaging is exactly the operation that
+ * would erase the thing the map exists to show.
+ */
+const OVERLAY_MAX_PX = 900;
+
 function overlayURL() {
+  const f = Math.max(1, Math.ceil(Math.max(meta.width, meta.height) / OVERLAY_MAX_PX));
+  const W = Math.ceil(meta.width / f), H = Math.ceil(meta.height / f);
+  const small = new Uint8Array(W * H);
+  for (let y = 0; y < meta.height; y++) {
+    const oy = ((y / f) | 0) * W;
+    const row = y * meta.width;
+    for (let x = 0; x < meta.width; x++) {
+      const v = grid[row + x];
+      const k = oy + ((x / f) | 0);
+      if (v > small[k]) small[k] = v;
+    }
+  }
+
   const c = document.createElement("canvas");
-  c.width = meta.width; c.height = meta.height;
+  c.width = W; c.height = H;
   const ctx = c.getContext("2d");
-  const im = ctx.createImageData(meta.width, meta.height);
+  const im = ctx.createImageData(W, H);
   const top = Math.max(1, meta.max_m / meta.step_m);
-  for (let i = 0; i < grid.length; i++) {
-    const v = grid[i];
+  for (let i = 0; i < small.length; i++) {
+    const v = small[i];
     const j = i * 4;
     if (v === 0) { im.data[j + 3] = 0; continue; }
     // Nothing under FLOOR is drawn at all. A ramp that starts at zero tints the
@@ -211,8 +236,8 @@ function render() {
   });
   if (!a) {
     box.className = "empty";
-    box.textContent = "Nothing in range is inside the mapped area. " +
-      "Only South East Queensland is covered so far.";
+    box.textContent = "Nothing in range yet. South East Queensland is mapped "
+      + "first; the rest is being added.";
     return;
   }
 
@@ -222,26 +247,17 @@ function render() {
     '<div class="big">' + fmtKm(a.dist_m) + " <span>from anything</span></div>" +
     '<ul class="leg">' +
     "<li><b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b></li>" +
-    "<li>Head " + m.label + " to <b>" + a.access.lat.toFixed(4) + ", " +
-      a.access.lon.toFixed(4) + "</b>, the closest you can get on built ground.</li>" +
-    "<li>Then walk about <b>" + fmtKm(a.dist_m) + "</b> in.</li>" +
+    "<li>" + m.verb.charAt(0).toUpperCase() + m.verb.slice(1) + " to <b>" +
+      a.access.lat.toFixed(4) + ", " + a.access.lon.toFixed(4) +
+      "</b>, the last built ground on the way.</li>" +
+    "<li>Then walk the final <b>" + fmtKm(a.dist_m) + "</b>.</li>" +
     '<li><a target="_blank" rel="noopener" href="https://www.openstreetmap.org/#map=14/' +
       a.lat.toFixed(4) + "/" + a.lon.toFixed(4) + '">See it on OpenStreetMap</a></li>' +
     "</ul>";
 
-  layers.reach = L.circle([state.origin.lat, state.origin.lon], {
-    radius: a.reachM, color: "#8b949e", weight: 1, dashArray: "4 5",
-    fill: false, interactive: false,
-  }).addTo(map);
-  layers.line = L.polyline(a.access.path, {
-    color: "#e2674a", weight: 2, opacity: 0.85,
-  }).addTo(map);
   layers.target = L.circleMarker([a.lat, a.lon], {
-    radius: 8, color: "#e2674a", weight: 3, fillColor: "#e2674a", fillOpacity: 0.35,
+    radius: 7, color: "#fff", weight: 2, fillColor: "#e2674a", fillOpacity: 1,
   }).addTo(map).bindTooltip("Furthest from anything");
-  layers.access = L.circleMarker([a.access.lat, a.access.lon], {
-    radius: 5, color: "#8b949e", weight: 2, fillColor: "#0d1117", fillOpacity: 1,
-  }).addTo(map).bindTooltip("Leave the car about here");
 
   map.fitBounds(
     L.latLngBounds([[a.lat, a.lon], [state.origin.lat, state.origin.lon]]).pad(0.35),
