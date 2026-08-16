@@ -28,7 +28,9 @@ header{
   padding:14px 18px; border-bottom:1px solid var(--line); background:var(--panel);
   display:flex; gap:16px; align-items:baseline; flex-wrap:wrap;
 }
-h1{font-size:17px; margin:0; letter-spacing:-.01em}
+h1{margin:0; line-height:0}
+h1 img{height:30px; width:auto; display:block}
+@media (max-width:520px){ h1 img{height:24px} }
 header p{margin:0; color:var(--muted); font-size:13.5px}
 header a{color:var(--muted)}
 main{flex:1; display:flex; min-height:0}
@@ -71,7 +73,7 @@ a{color:var(--accent)}
 </head>
 <body>
 <header>
-  <h1>Woop Woop</h1>
+  <h1><img src="logo.svg" alt="Woop Woop" width="359" height="74"></h1>
   <p>The middle of nowhere, precisely located.</p>
   <p style="margin-left:auto"><a href="https://charlietrenorden.com/">Other projects</a></p>
 </header>
