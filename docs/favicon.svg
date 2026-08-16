@@ -1,0 +1,10 @@
+<!-- Furthest: one road along the edge, one dot as far from it as the tile allows.
+     The whole idea in two marks. Chosen over a map pin (reads as "location" in every
+     UI on earth) and over concentric rings (reads as "find me"). At 16px the line
+     survives as an edge and the dot as a dot, which is the minimum this needs. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#171c24"/>
+  <path d="M3 25.5 Q10 27 16 24.5 T29 22" fill="none" stroke="#5b6673"
+        stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="12.5" cy="10" r="3.6" fill="#e2674a"/>
+</svg>

@@ -3,3 +3,4 @@ data/*.npy
 data/*.npz
 __pycache__/
 .venv/
+data/*.png

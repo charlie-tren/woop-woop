@@ -92,8 +92,13 @@ def water_mask(grid, d):
       the coast exits the box - here, the last two rows at the southern edge. Without a
       sealed border the flood escapes through that gap, wraps around the outside and
       marks the entire region as ocean (measured: 98.6% on the first attempt).
-    * **The barrier is dilated by one cell**, closing sub-cell gaps where a coastline
-      way is split between two OSM ways that do not share a vertex.
+    The barrier is NOT dilated. Dilation was added first, to close the gap at the
+    southern edge, and it worked - but it also sealed the narrow tidal channels of
+    southern Moreton Bay, which welded North Stradbroke and Russell Island to the
+    mainland and let the app answer with a place you need a ferry to reach. The gap it
+    was covering for was really the way-truncation bug in extract.py; once whole ways
+    were kept, the dilation was pure harm. Measured: with it, 3 of 4 test islands read
+    as mainland; without it, only Bribie does - and Bribie has a road bridge.
 
     Islands end up as land, which is right for the distance measure but means an island
     can win. That is acceptable only because reachability filters it later - see the
@@ -101,7 +106,7 @@ def water_mask(grid, d):
     """
     kind = d["kind"]
     coast = burn(grid, d["lon"], d["lat"], d["off"], kind == "coast")
-    barrier = ndimage.binary_dilation(coast)
+    barrier = coast.copy()
     barrier[0, :] = barrier[-1, :] = True
     barrier[:, 0] = barrier[:, -1] = True
 
