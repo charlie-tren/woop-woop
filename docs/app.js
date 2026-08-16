@@ -1,4 +1,4 @@
-/* Furthest - find the emptiest reachable point.
+/* Woop Woop - find the emptiest reachable point.
  *
  * The whole measurement runs in the browser. seq.png is one byte per 100 m cell
  * holding the distance from that cell to the nearest road, building, railway, power

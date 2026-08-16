@@ -1,8 +1,12 @@
-# Furthest
+# Woop Woop
 
-The emptiest place you can actually get to, given where you start and how long you have.
+The middle of nowhere, precisely located.
 
-Live at <https://charlietrenorden.com/furthest/>.
+Pick a starting point, a way of travelling and how long you have; get the spot in range
+that is furthest from every road, building, railway, power line and runway - and how to
+walk in to it.
+
+Live at <https://charlietrenorden.com/woop-woop/>.
 
 Isochrone tools are everywhere and they all draw the same thing: the area you can
 reach. None of them rank what is *inside* it. The maps that do measure emptiness
