@@ -7,6 +7,7 @@
   "height": 3112,
   "cell_m": 100.0,
   "step_m": 50,
-  "max_m": 6985.69970703125,
-  "note": "0 = cannot stand there. Otherwise metres = value * step_m."
+  "reach_step_m": 25,
+  "max_m": 10473.7763671875,
+  "note": "R: 0 = cannot stand there, else metres to civilisation = R * step_m. G: metres to the nearest road, track or path = G * reach_step_m."
 }

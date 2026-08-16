@@ -8,6 +8,12 @@
 const DATA = "data/";
 const FLOOR = 10;   // in step_m units: draw nothing closer than 500 m to something
 
+// How far you are willing to leave a track behind. This is the constraint that stops
+// the answer being a pin in trackless forest: the point has to be within this of a
+// road, fire trail or walking path, even though the DISTANCE being maximised ignores
+// tracks entirely. Without it the winner is wherever the scrub is thickest.
+const MAX_BUSH_M = 300;
+
 // Average progress, not top speed - a car does not hold 100 km/h on the way out of
 // town. Marked as an estimate in the UI because it IS one: the real version asks a
 // routing engine which roads exist and how fast they are.
@@ -21,7 +27,7 @@ const state = {
   mode: "car", mins: 60,
   origin: { lat: -27.4698, lon: 153.0251 }, originName: "Brisbane",
 };
-let meta, grid, map, layers = {};
+let meta, grid, reach, map, layers = {}, overlays = null, field = null;
 
 const $ = (s) => document.querySelector(s);
 const fmtKm = (m) => (m < 950 ? Math.round(m) + " m" : (m / 1000).toFixed(1) + " km");
@@ -49,9 +55,12 @@ async function load() {
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(img, 0, 0);
   const rgba = ctx.getImageData(0, 0, meta.width, meta.height).data;
-  grid = new Uint8Array(meta.width * meta.height);
-  for (let i = 0; i < grid.length; i++) grid[i] = rgba[i * 4];  // greyscale: R only
-  return { map: overlayURL("map"), sat: overlayURL("sat") };
+  grid = new Uint8Array(meta.width * meta.height);   // R: metres to civilisation
+  reach = new Uint8Array(meta.width * meta.height);  // G: metres to a way in
+  for (let i = 0; i < grid.length; i++) {
+    grid[i] = rgba[i * 4];
+    reach[i] = rgba[i * 4 + 1];
+  }
 }
 
 /* Colour the field so the map shows WHERE the empty country is, not just one pin.
@@ -186,8 +195,10 @@ function solve() {
   let best = 0, bx = -1, by = -1;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
-      const v = grid[y * meta.width + x];
+      const i = y * meta.width + x;
+      const v = grid[i];
       if (v <= best) continue;                      // cheapest test first
+      if (reach[i] * meta.reach_step_m > MAX_BUSH_M) continue;   // no trackless pins
       if (!land.seen[land.idx(x, y)]) continue;     // no boats
       const ll = toLL(x + 0.5, y + 0.5);
       const dx = (ll[1] - state.origin.lon) * mPerDegLon;
@@ -201,6 +212,7 @@ function solve() {
   const ll = toLL(bx + 0.5, by + 0.5);
   return {
     lat: ll[0], lon: ll[1], dist_m: best * meta.step_m,
+    offtrack_m: reach[by * meta.width + bx] * meta.reach_step_m,
     reachM: reachM, access: walkOut(bx, by),
   };
 }
@@ -258,9 +270,17 @@ function render() {
     "<li>" + m.verb.charAt(0).toUpperCase() + m.verb.slice(1) + " to <b>" +
       a.access.lat.toFixed(4) + ", " + a.access.lon.toFixed(4) +
       "</b>, the last built ground on the way.</li>" +
-    "<li>Then walk the final <b>" + fmtKm(a.dist_m) + "</b>.</li>" +
-    '<li><a target="_blank" rel="noopener" href="https://www.openstreetmap.org/#map=14/' +
-      a.lat.toFixed(4) + "/" + a.lon.toFixed(4) + '">See it on OpenStreetMap</a></li>' +
+    "<li>Then walk about <b>" + fmtKm(a.dist_m) + "</b> - tracks most of the way, " +
+      "the last <b>" + fmtKm(a.offtrack_m) + "</b> off them.</li>" +
+    '<li><a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1' +
+      "&origin=" + state.origin.lat.toFixed(5) + "," + state.origin.lon.toFixed(5) +
+      "&destination=" + a.access.lat.toFixed(5) + "," + a.access.lon.toFixed(5) +
+      "&travelmode=" + (state.mode === "car" ? "driving"
+        : state.mode === "bike" ? "bicycling" : "walking") +
+      '">Directions to the drop-off</a>' +
+    ' &middot; <a target="_blank" rel="noopener" ' +
+      'href="https://www.google.com/maps/search/?api=1&query=' +
+      a.lat.toFixed(5) + "," + a.lon.toFixed(5) + '">the spot itself</a></li>' +
     "</ul>";
 
   layers.target = L.circleMarker([a.lat, a.lon], {
@@ -274,9 +294,9 @@ function render() {
 
 /* ---------- wiring ---------- */
 (async function main() {
-  const urls = await load();
+  await load();
 
-  map = L.map("map", { zoomControl: true })
+  map = L.map("map", { zoomControl: true, preferCanvas: true })
     .setView([state.origin.lat, state.origin.lon], 8);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 17,
@@ -290,21 +310,35 @@ function render() {
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/" +
     "MapServer/tile/{z}/{y}/{x}",
     { maxZoom: 17, opacity: 0.9, attribution: "Imagery &copy; Esri" });
-
   const bounds = [[meta.south, meta.west], [meta.north, meta.east]];
-  const field = L.imageOverlay(urls.map, bounds,
-    { opacity: 0.85, interactive: false }).addTo(map);
+
+  // The shading is OFF by default and only built when first asked for. It is a whole
+  // extra image the browser recomposites on every pan and zoom frame, and most of the
+  // time you want to read the map, not the field. Building it lazily also keeps it out
+  // of first paint.
+  function palette() { return $("#satellite").checked ? "sat" : "map"; }
+  function syncField() {
+    const want = $("#shade").checked;
+    if (want && !field) {
+      if (!overlays) overlays = {};
+      overlays[palette()] = overlays[palette()] || overlayURL(palette());
+      field = L.imageOverlay(overlays[palette()], bounds,
+        { opacity: 0.85, interactive: false }).addTo(map);
+    } else if (want && field) {
+      overlays[palette()] = overlays[palette()] || overlayURL(palette());
+      field.setUrl(overlays[palette()]);
+      field.bringToFront();
+    } else if (!want && field) {
+      map.removeLayer(field); field = null;
+    }
+  }
 
   $("#satellite").addEventListener("change", (e) => {
-    if (e.target.checked) {
-      sat.addTo(map);
-      field.setUrl(urls.sat);
-    } else {
-      map.removeLayer(sat);
-      field.setUrl(urls.map);
-    }
-    field.bringToFront();
+    if (e.target.checked) sat.addTo(map); else map.removeLayer(sat);
+    syncField();
   });
+  $("#shade").addEventListener("change", syncField);
+
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
 

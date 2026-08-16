@@ -10,22 +10,32 @@ is all the rasteriser needs and is ~20x smaller than keeping the tagged objects.
 """
 import sys, time, numpy as np, osmium
 
-# A way is "anything" if it matches one of these. Deliberately NOT every tag in OSM:
-# a fence or a stream does not make a place less remote, and including them turns the
-# answer into noise.
-ROAD_VALUES = {
+# TWO networks, and the distinction is the whole design.
+#
+# CIVILISATION is what the distance is measured TO. A tarred road or a house means
+# people; that is what you are getting away from.
+#
+# ACCESS is how you GET there. A fire trail or a walking track is not civilisation -
+# nobody feels crowded by a footpath - but it is the difference between a place you can
+# reach and a pin in trackless scrub.
+#
+# The first version had `track` in the civilisation set, which made the answer the
+# middle of a forest with no way in, because being far from every track was part of
+# what it was maximising. Separating them lets the answer be "the end of the remotest
+# fire trail", which is the thing a person actually wants.
+CIVILISATION = {
     "motorway", "trunk", "primary", "secondary", "tertiary", "unclassified",
-    "residential", "living_street", "service", "track", "motorway_link",
-    "trunk_link", "primary_link", "secondary_link", "tertiary_link",
+    "residential", "living_street", "service",
+    "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link",
 }
-# Deliberately excluded from roads: path, footway, cycleway, bridleway, steps.
-# A walking track through a national park is how you GET to a remote place - counting
-# it as civilisation would rule out every answer worth having.
+ACCESS_ONLY = {"track", "path", "footway", "cycleway", "bridleway", "steps"}
 
 def want(tags):
     hw = tags.get("highway")
-    if hw in ROAD_VALUES:
+    if hw in CIVILISATION:
         return "road"
+    if hw in ACCESS_ONLY:
+        return "way"
     if "building" in tags:
         return "building"
     rw = tags.get("railway")

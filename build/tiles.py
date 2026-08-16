@@ -5,22 +5,28 @@ field is smooth, so PNG's filters compress it to a size worth shipping whole - a
 point the client needs no server, no tile logic and no API for the measurement half.
 Everything the page does with it is a pixel lookup.
 
-Encoding: one byte per cell, in STEP-metre units. Zero is reserved for "you cannot
-stand here" (ocean, lakes, outside the answered region), so a value of 0 and a distance
-of 0 are never confused - a cell ON a road is 1, not 0.
+Encoding: two channels of one image, so both fields arrive in a single request.
+  R = metres to the nearest CIVILISATION, in STEP units. Zero is reserved for "you
+      cannot stand here" (ocean, lakes, outside the answered region), so a value of 0
+      and a distance of 0 are never confused - a cell ON a road is 1, not 0.
+  G = metres to the nearest ACCESS way (road, track or path) in REACH_STEP units,
+      which is finer because the only question asked of it is "is this within a short
+      walk", and it is clipped rather than scaled - anything past the ceiling is
+      already too far to matter.
 """
 import json, sys, numpy as np
 from PIL import Image
 sys.path.insert(0, "build")
 from raster import Grid
 
-STEP = 50  # metres per unit; 255 * 50 = 12.75 km ceiling
+STEP = 50        # metres per unit; 255 * 50 = 12.75 km ceiling
+REACH_STEP = 25  # metres per unit for the access field; ceiling 6.4 km
 
 
 def main(src="data/seq-dist.npz", out_png="docs/data/seq.png",
          out_json="docs/data/seq.json"):
     r = np.load(src, allow_pickle=True)
-    dist, wet, ans = r["dist"], r["wet"], r["answerable"]
+    dist, wet, ans, reach = r["dist"], r["wet"], r["answerable"], r["reach"]
     g = Grid(tuple(r["bbox"]), float(r["cell"]))
     serve = tuple(r["serve"])
 
@@ -39,15 +45,18 @@ def main(src="data/seq-dist.npz", out_png="docs/data/seq.png",
 
     v = np.clip(np.rint(d / STEP), 1, 255).astype(np.uint8)
     v[~standable] = 0
+    g = np.clip(np.rint(reach[sl] / REACH_STEP), 0, 255).astype(np.uint8)
 
-    Image.fromarray(v, mode="L").save(out_png, optimize=True)
+    rgb = np.dstack([v, g, np.zeros_like(v)])
+    Image.fromarray(rgb, mode="RGB").save(out_png, optimize=True)
 
     meta = {
         "south": serve[0], "west": serve[1], "north": serve[2], "east": serve[3],
         "width": int(v.shape[1]), "height": int(v.shape[0]),
-        "cell_m": float(r["cell"]), "step_m": STEP,
+        "cell_m": float(r["cell"]), "step_m": STEP, "reach_step_m": REACH_STEP,
         "max_m": float(d[standable].max()) if standable.any() else 0.0,
-        "note": "0 = cannot stand there. Otherwise metres = value * step_m.",
+        "note": ("R: 0 = cannot stand there, else metres to civilisation = R * step_m. "
+                 "G: metres to the nearest road, track or path = G * reach_step_m."),
     }
     import os
     json.dump(meta, open(out_json, "w"), indent=2)

@@ -13,26 +13,38 @@ TAGLINE = "The middle of nowhere, precisely located."
 # Spanning registers deliberately: condensed grotesque, geometric, monospace,
 # editorial serif, display, humanist.
 FONTS = [
-    ("Oswald", 500, "condensed grotesque - map label"),
-    ("Archivo Narrow", 700, "condensed, workmanlike"),
-    ("Bebas Neue", 400, "display caps, poster"),
-    ("Anton", 400, "heavy display, loud"),
-    ("Space Grotesk", 600, "geometric with quirks"),
-    ("Outfit", 600, "clean geometric, neutral"),
-    ("Sora", 600, "technical geometric"),
-    ("Bricolage Grotesque", 700, "characterful grotesque"),
-    ("JetBrains Mono", 600, "monospace, coordinates"),
-    ("IBM Plex Mono", 600, "monospace, softer"),
-    ("Fraunces", 600, "editorial serif, warm"),
-    ("Instrument Serif", 400, "high-contrast serif"),
-    ("DM Serif Display", 400, "classical display serif"),
-    ("Playfair Display", 700, "elegant, bookish"),
+    # Deliberately spanning genres rather than weights. The first pass was fourteen
+    # respectable sans and serifs, which is one axis explored fourteen times.
+    ("Overpass", 700, "highway signage - literally built from road signs"),
+    ("Big Shoulders Display", 700, "civic signage, condensed"),
+    ("Fjalla One", 400, "ultra condensed, newsstand"),
+    ("Archivo Black", 400, "brutalist slab of a sans"),
+    ("Syne", 700, "art-school grotesque, odd widths"),
+    ("Alfa Slab One", 400, "fairground slab"),
+    ("Rye", 400, "wood type, western"),
+    ("Special Elite", 400, "typewriter, field notes"),
+    ("Courier Prime", 700, "clean typewriter"),
+    ("Silkscreen", 700, "bitmap, GPS unit"),
+    ("Press Start 2P", 400, "8-bit"),
+    ("Orbitron", 700, "techno, instrument panel"),
+    ("Saira Stencil One", 400, "stencil, crate-stamped"),
+    ("Permanent Marker", 400, "marker pen"),
+    ("Amatic SC", 700, "hand-drawn, tall and thin"),
+    ("Cabin Sketch", 700, "sketched, outdoorsy"),
+    ("Bangers", 400, "comic shout"),
+    ("Fredoka", 600, "rounded, friendly"),
+    ("Poiret One", 400, "art deco, fine"),
+    ("Lobster", 400, "script, roadside diner"),
 ]
 
+# Single-weight families 404 if a wght axis is requested, which silently drops the
+# whole stylesheet and renders every row in the fallback face.
+SINGLE_WEIGHT = {"Fjalla One", "Archivo Black", "Alfa Slab One", "Rye",
+                 "Special Elite", "Press Start 2P", "Saira Stencil One",
+                 "Permanent Marker", "Bangers", "Poiret One", "Lobster"}
 CSS_FAMILIES = "&family=".join(
-    f"{n.replace(' ', '+')}:wght@{w}" if n not in
-    ("Bebas Neue", "Anton", "Instrument Serif", "DM Serif Display")
-    else n.replace(" ", "+") for n, w, _ in FONTS)
+    n.replace(" ", "+") if n in SINGLE_WEIGHT
+    else f"{n.replace(' ', '+')}:wght@{w}" for n, w, _ in FONTS)
 
 HTML = """<!doctype html><meta charset="utf-8">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family={fams}&display=block">

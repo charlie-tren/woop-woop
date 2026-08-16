@@ -79,6 +79,9 @@ def burn(grid, lon, lat, off, want=None):
 
 # What counts as civilisation, and therefore what the distance is measured TO.
 ANYTHING = {"road", "building", "rail", "power", "aero"}
+# How you get there: civilisation's roads plus tracks and walking paths. A point is
+# only an answer if it is close to one of these - otherwise it is a pin in scrub.
+ACCESS = ANYTHING | {"way"}
 
 
 def water_mask(grid, d):
@@ -151,7 +154,11 @@ def run(features, cell_m, out):
 
     t0 = time.time()
     dist = ndimage.distance_transform_edt(~occ, sampling=cell_m).astype(np.float32)
-    print(f"  distance transform in {time.time()-t0:.0f}s")
+
+    acc = burn(grid, d["lon"], d["lat"], d["off"], np.isin(d["kind"], list(ACCESS)))
+    reach = ndimage.distance_transform_edt(~acc, sampling=cell_m).astype(np.float32)
+    print(f"  two distance transforms in {time.time()-t0:.0f}s; "
+          f"access network covers {acc.sum():,} cells")
 
     # Outside the serve box the distances are buffer-quality only: they exist so the
     # inner box measures correctly, and must never be returned as answers.
@@ -161,14 +168,18 @@ def run(features, cell_m, out):
     answerable[int(np.ceil(y0)):int(y1), int(np.ceil(x0)):int(x1)] = True
     print(f"  serve box is {100*answerable.mean():.0f}% of the buffered grid")
 
-    np.savez_compressed(out, dist=dist, wet=wet, occ=occ, answerable=answerable,
-                        bbox=np.array(bbox), serve=np.array(serve), cell=cell_m)
+    np.savez_compressed(out, dist=dist, reach=reach, wet=wet, occ=occ,
+                        answerable=answerable, bbox=np.array(bbox),
+                        serve=np.array(serve), cell=cell_m)
     print(f"  -> {out}")
 
     # Sanity checks that cost nothing and catch a flipped axis or a broken land mask.
-    for label, field in (("ignoring water", dist),
-                         ("on land", np.where(wet, -1, dist)),
-                         ("on land, in box", np.where(wet | ~answerable, -1, dist))):
+    for label, field in (
+            ("ignoring water", dist),
+            ("on land", np.where(wet, -1, dist)),
+            ("on land, in box", np.where(wet | ~answerable, -1, dist)),
+            ("within 300 m of a track",
+             np.where(wet | ~answerable | (reach > 300), -1, dist))):
         iy, ix = np.unravel_index(np.argmax(field), field.shape)
         lon, lat = grid.to_lonlat(ix, iy)
         print(f"  furthest {label:15} {lat:.5f}, {lon:.5f}  "
