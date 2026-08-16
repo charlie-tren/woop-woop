@@ -51,7 +51,7 @@ async function load() {
   const rgba = ctx.getImageData(0, 0, meta.width, meta.height).data;
   grid = new Uint8Array(meta.width * meta.height);
   for (let i = 0; i < grid.length; i++) grid[i] = rgba[i * 4];  // greyscale: R only
-  return overlayURL();
+  return { map: overlayURL("map"), sat: overlayURL("sat") };
 }
 
 /* Colour the field so the map shows WHERE the empty country is, not just one pin.
@@ -67,7 +67,16 @@ async function load() {
  */
 const OVERLAY_MAX_PX = 900;
 
-function overlayURL() {
+// Two palettes, because the field has to sit on two very different grounds. Warm
+// orange reads well on the pale OSM map and DISAPPEARS on satellite imagery, which is
+// the same dark green-brown - so imagery gets a cold bright ramp instead. Measured by
+// rendering both, not guessed.
+const PALETTES = {
+  map: (t) => [90 + 165 * t, 40 + 150 * t, 60 + 40 * t, 45 + 165 * t],
+  sat: (t) => [70 + 120 * t, 200 + 55 * t, 240 - 20 * t, 55 + 175 * t],
+};
+
+function overlayURL(palette) {
   const f = Math.max(1, Math.ceil(Math.max(meta.width, meta.height) / OVERLAY_MAX_PX));
   const W = Math.ceil(meta.width / f), H = Math.ceil(meta.height / f);
   const small = new Uint8Array(W * H);
@@ -96,10 +105,9 @@ function overlayURL() {
     // colour only ever means "this is the empty part".
     if (v < FLOOR) { im.data[j + 3] = 0; continue; }
     const t = Math.sqrt((v - FLOOR) / Math.max(1, top - FLOOR));
-    im.data[j] = 90 + 165 * t;
-    im.data[j + 1] = 40 + 150 * t;
-    im.data[j + 2] = 60 + 40 * t;
-    im.data[j + 3] = 45 + 165 * t;
+    const c = PALETTES[palette](t);
+    im.data[j] = c[0]; im.data[j + 1] = c[1];
+    im.data[j + 2] = c[2]; im.data[j + 3] = c[3];
   }
   ctx.putImageData(im, 0, 0);
   return c.toDataURL("image/png");
@@ -266,7 +274,7 @@ function render() {
 
 /* ---------- wiring ---------- */
 (async function main() {
-  const url = await load();
+  const urls = await load();
 
   map = L.map("map", { zoomControl: true })
     .setView([state.origin.lat, state.origin.lon], 8);
@@ -275,8 +283,28 @@ function render() {
     attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">' +
       "OpenStreetMap</a> contributors",
   }).addTo(map);
-  L.imageOverlay(url, [[meta.south, meta.west], [meta.north, meta.east]],
+
+  // Imagery sits ON TOP of the map rather than replacing it, so the labels and roads
+  // you were just reading do not vanish when you turn it on.
+  const sat = L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/" +
+    "MapServer/tile/{z}/{y}/{x}",
+    { maxZoom: 17, opacity: 0.9, attribution: "Imagery &copy; Esri" });
+
+  const bounds = [[meta.south, meta.west], [meta.north, meta.east]];
+  const field = L.imageOverlay(urls.map, bounds,
     { opacity: 0.85, interactive: false }).addTo(map);
+
+  $("#satellite").addEventListener("change", (e) => {
+    if (e.target.checked) {
+      sat.addTo(map);
+      field.setUrl(urls.sat);
+    } else {
+      map.removeLayer(sat);
+      field.setUrl(urls.map);
+    }
+    field.bringToFront();
+  });
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
 
