@@ -21,15 +21,15 @@ range.
                        Geofabrik .osm.pbf, plus coastline and water, over a buffered box
     build/raster.py    burn them into a 100 m grid, take a Euclidean distance transform,
                        mask the ocean, mark the inner box answerable
-    build/tiles.py     export the serve box as one 8-bit PNG (1.2 MB for all of SEQ)
+    build/peaks.py     keep only the LOCAL MAXIMA and pack them binary (640 KB for SEQ)
     build/icons.py     render the favicon files from favicon.svg
-    docs/              the site: everything is measured in the browser from that PNG
+    docs/              the site: the query is a scan over the peak list
 
 Rebuild:
 
     python build/extract.py data/australia-latest.osm.pbf
     python build/raster.py  data/seq-features.npz 100 data/seq-dist.npz
-    python build/tiles.py
+    python build/peaks.py
 
 ## Things that are easy to get wrong
 
@@ -44,6 +44,18 @@ Rebuild:
   somewhere you need a ferry to reach.
 * **The naive maximum is usually degenerate** - an island, or open water. Reachability
   is a hard filter, not a display option.
+
+## Why there is no tile pyramid
+
+The obvious way to cover a continent is to cut the distance field into map tiles and
+load the ones you need. It is also unnecessary. **The answer to "the furthest point in
+this region" is always a local maximum of the field**, so the only cells that can ever
+be an answer are the peaks. Australia at 100 m is 1.6 billion cells; its peaks, spaced
+a kilometre apart and filtered to somewhere you can actually reach, are a list.
+
+Each peak carries what the query needs - distance, how far off a track it sits, the
+access point, and a land-component id so "can I get there without a boat" is an integer
+comparison. The raster is build scaffolding and never leaves the machine.
 
 ## Status
 

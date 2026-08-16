@@ -1,0 +1,30 @@
+{
+ "serve": [
+  -28.6,
+  151.6,
+  -25.8,
+  153.6
+ ],
+ "max_bush_m": 300,
+ "spacing_m": 1000,
+ "count": 29743,
+ "coord_scale": 100000.0,
+ "fields": [
+  "lat:i4",
+  "lon:i4",
+  "d:u2",
+  "off:u2",
+  "alat:i4",
+  "alon:i4",
+  "c:u2"
+ ],
+ "comp": {
+  "width": 159,
+  "height": 223,
+  "north": -25.2,
+  "west": 151.0,
+  "south": -29.200000000000003,
+  "east": 154.2
+ },
+ "max_m": 9437.16015625
+}

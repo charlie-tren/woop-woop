@@ -1,18 +1,17 @@
-/* Woop Woop - find the emptiest reachable point.
+/* Woop Woop - the emptiest place you can actually get to.
  *
- * The whole measurement runs in the browser. seq.png is one byte per 100 m cell
- * holding the distance from that cell to the nearest road, building, railway, power
- * line or runway, so answering a query is a scan over pixels rather than a request to
- * anything. 0 means you cannot stand there (ocean, lakes, outside the mapped region).
+ * The browser does not hold a distance surface. It holds the PEAKS of one.
+ *
+ * The answer to "the furthest point in this region" is always a local maximum, so the
+ * only cells that can ever be an answer are the peaks - a few tens of thousands, not a
+ * few billion. Everything a query needs is precomputed into each peak by the build:
+ * how far it is from civilisation, how far off a track it sits, where you leave the
+ * car, and which landmass it is on. The query is then a scan over a sorted list.
+ *
+ * That is what makes coverage a matter of running the build rather than inventing a
+ * tile pyramid.
  */
 const DATA = "data/";
-const FLOOR = 10;   // in step_m units: draw nothing closer than 500 m to something
-
-// How far you are willing to leave a track behind. This is the constraint that stops
-// the answer being a pin in trackless forest: the point has to be within this of a
-// road, fire trail or walking path, even though the DISTANCE being maximised ignores
-// tracks entirely. Without it the winner is wherever the scrub is thickest.
-const MAX_BUSH_M = 300;
 
 // Average progress, not top speed - a car does not hold 100 km/h on the way out of
 // town. Marked as an estimate in the UI because it IS one: the real version asks a
@@ -25,223 +24,86 @@ const MODES = {
 
 const state = {
   mode: "car", mins: 60,
-  origin: { lat: -27.4698, lon: 153.0251 }, originName: "Brisbane",
+  origin: { lat: -27.4698, lon: 153.0251 },
 };
-let meta, grid, reach, map, layers = {}, overlays = null, field = null;
+let meta, P, comp, map, layers = {};
 
 const $ = (s) => document.querySelector(s);
 const fmtKm = (m) => (m < 950 ? Math.round(m) + " m" : (m / 1000).toFixed(1) + " km");
 
-/* ---------- grid helpers: the same equirectangular mapping the build used ---------- */
-const toPx = (lat, lon) => [
-  ((lon - meta.west) / (meta.east - meta.west)) * meta.width,
-  ((meta.north - lat) / (meta.north - meta.south)) * meta.height,
-];
-const toLL = (x, y) => [
-  meta.north - (y / meta.height) * (meta.north - meta.south),
-  meta.west + (x / meta.width) * (meta.east - meta.west),
-];
-const at = (x, y) =>
-  (x < 0 || y < 0 || x >= meta.width || y >= meta.height)
-    ? 0 : grid[y * meta.width + x];
-
 async function load() {
-  meta = await (await fetch(DATA + "seq.json")).json();
-  const img = new Image();
-  img.src = DATA + "seq.png";
-  await img.decode();
-  const c = document.createElement("canvas");
-  c.width = meta.width; c.height = meta.height;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(img, 0, 0);
-  const rgba = ctx.getImageData(0, 0, meta.width, meta.height).data;
-  grid = new Uint8Array(meta.width * meta.height);   // R: metres to civilisation
-  reach = new Uint8Array(meta.width * meta.height);  // G: metres to a way in
-  for (let i = 0; i < grid.length; i++) {
-    grid[i] = rgba[i * 4];
-    reach[i] = rgba[i * 4 + 1];
-  }
+  meta = await (await fetch(DATA + "peaks.json")).json();
+  const buf = await (await fetch(DATA + "peaks.bin")).arrayBuffer();
+  const n = meta.count;
+  let o = 0;
+  const take = (Type, count) => {
+    const a = new Type(buf, o, count); o += count * Type.BYTES_PER_ELEMENT; return a;
+  };
+  // Structure of arrays, in the order the build wrote them.
+  const lat = take(Int32Array, n), lon = take(Int32Array, n);
+  const d = take(Uint16Array, n), off = take(Uint16Array, n);
+  const alat = take(Int32Array, n), alon = take(Int32Array, n);
+  const c = take(Uint16Array, n);
+  P = { n: n, s: meta.coord_scale, lat: lat, lon: lon, d: d, off: off,
+        alat: alat, alon: alon, c: c };
+
+  const cb = await (await fetch(DATA + "peaks-comp.bin")).arrayBuffer();
+  comp = new Uint16Array(cb);
 }
 
-/* Colour the field so the map shows WHERE the empty country is, not just one pin.
- *
- * Drawn at a FRACTION of the data resolution. The grid is 1977x3112, and handing
- * Leaflet a 6-megapixel image means the browser recomposites all of it on every pan
- * and zoom frame, which is what made the map feel heavy. The full-resolution grid is
- * still what gets measured - this is only what gets looked at.
- *
- * Downsampling takes the MAXIMUM of each block, not the average. A remote spot is a
- * few bright cells surrounded by dark ones, so averaging is exactly the operation that
- * would erase the thing the map exists to show.
- */
-const OVERLAY_MAX_PX = 900;
-
-// Two palettes, because the field has to sit on two very different grounds. Warm
-// orange reads well on the pale OSM map and DISAPPEARS on satellite imagery, which is
-// the same dark green-brown - so imagery gets a cold bright ramp instead. Measured by
-// rendering both, not guessed.
-const PALETTES = {
-  map: (t) => [90 + 165 * t, 40 + 150 * t, 60 + 40 * t, 45 + 165 * t],
-  sat: (t) => [70 + 120 * t, 200 + 55 * t, 240 - 20 * t, 55 + 175 * t],
-};
-
-function overlayURL(palette) {
-  const f = Math.max(1, Math.ceil(Math.max(meta.width, meta.height) / OVERLAY_MAX_PX));
-  const W = Math.ceil(meta.width / f), H = Math.ceil(meta.height / f);
-  const small = new Uint8Array(W * H);
-  for (let y = 0; y < meta.height; y++) {
-    const oy = ((y / f) | 0) * W;
-    const row = y * meta.width;
-    for (let x = 0; x < meta.width; x++) {
-      const v = grid[row + x];
-      const k = oy + ((x / f) | 0);
-      if (v > small[k]) small[k] = v;
-    }
-  }
-
-  const c = document.createElement("canvas");
-  c.width = W; c.height = H;
-  const ctx = c.getContext("2d");
-  const im = ctx.createImageData(W, H);
-  const top = Math.max(1, meta.max_m / meta.step_m);
-  for (let i = 0; i < small.length; i++) {
-    const v = small[i];
-    const j = i * 4;
-    if (v === 0) { im.data[j + 3] = 0; continue; }
-    // Nothing under FLOOR is drawn at all. A ramp that starts at zero tints the
-    // entire city a dark blue-green that is indistinguishable from the basemap's own
-    // parkland, so the map ends up looking untouched. Starting at 500 m means the
-    // colour only ever means "this is the empty part".
-    if (v < FLOOR) { im.data[j + 3] = 0; continue; }
-    const t = Math.sqrt((v - FLOOR) / Math.max(1, top - FLOOR));
-    const c = PALETTES[palette](t);
-    im.data[j] = c[0]; im.data[j + 1] = c[1];
-    im.data[j + 2] = c[2]; im.data[j + 3] = c[3];
-  }
-  ctx.putImageData(im, 0, 0);
-  return c.toDataURL("image/png");
+/* Which landmass a point is on. Islands get their own id, so "can I get there without
+ * a boat" is an integer comparison rather than a flood fill over a raster we no longer
+ * ship. Returns 0 for water, which matches nothing. */
+function componentAt(lat, lon) {
+  const g = meta.comp;
+  const x = Math.floor(((lon - g.west) / (g.east - g.west)) * g.width);
+  const y = Math.floor(((g.north - lat) / (g.north - g.south)) * g.height);
+  if (x < 0 || y < 0 || x >= g.width || y >= g.height) return 0;
+  return comp[y * g.width + x];
 }
 
-/* Snap a clicked point to the nearest cell you could actually stand on.
- * Clicking in the middle of the bay is a reasonable thing for someone to do. */
-function snapToLand(x, y) {
-  if (at(x, y) > 0) return [x, y];
-  for (let r = 1; r < 120; r++) {
+/* If the click lands in water or off the edge, search outwards until it does not. */
+function componentNear(lat, lon) {
+  const direct = componentAt(lat, lon);
+  if (direct) return direct;
+  const g = meta.comp;
+  const stepLat = (g.north - g.south) / g.height;
+  const stepLon = (g.east - g.west) / g.width;
+  for (let r = 1; r <= 25; r++) {
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
-        if (at(x + dx, y + dy) > 0) return [x + dx, y + dy];
+        const v = componentAt(lat - dy * stepLat, lon + dx * stepLon);
+        if (v) return v;
       }
     }
   }
-  return null;
-}
-
-/* Which cells can you get to WITHOUT crossing water.
- *
- * This is the hard filter, not a nicety. Without it the answer for Brisbane is a
- * sand island in Moreton Bay that you would need a boat to reach - the same
- * degenerate result the German prior art had to work around by hand. A straight-line
- * range says the island is 25 km away and therefore fine; land connectivity says you
- * cannot walk or drive there at all.
- *
- * A flood fill is not a substitute for a real road-network isochrone. It is the part
- * of the answer that a routing engine would also enforce, done now so the result is
- * honest in the meantime.
- */
-function landReach(sx, sy, x0, y0, x1, y1) {
-  const W = meta.width;
-  const seen = new Uint8Array((x1 - x0 + 1) * (y1 - y0 + 1));
-  const idx = (x, y) => (y - y0) * (x1 - x0 + 1) + (x - x0);
-  const q = new Int32Array((x1 - x0 + 1) * (y1 - y0 + 1) * 2);
-  let head = 0, tail = 0;
-  q[tail++] = sx; q[tail++] = sy; seen[idx(sx, sy)] = 1;
-  while (head < tail) {
-    const x = q[head++], y = q[head++];
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const nx = x + dx, ny = y + dy;
-        if (nx < x0 || ny < y0 || nx > x1 || ny > y1) continue;
-        const i = idx(nx, ny);
-        if (seen[i] || grid[ny * W + nx] === 0) continue;
-        seen[i] = 1; q[tail++] = nx; q[tail++] = ny;
-      }
-    }
-  }
-  return { seen: seen, idx: idx };
+  return 0;
 }
 
 /* ---------- the query ---------- */
 function solve() {
   const m = MODES[state.mode];
   const reachM = (m.kmh * 1000) * (state.mins / 60) * m.detour;
-
   const mPerDegLat = 111320;
   const mPerDegLon = mPerDegLat * Math.cos((state.origin.lat * Math.PI) / 180);
-  const p = toPx(state.origin.lat, state.origin.lon);
-  const rx = Math.ceil((reachM / mPerDegLon) / ((meta.east - meta.west) / meta.width));
-  const ry = Math.ceil((reachM / mPerDegLat) / ((meta.north - meta.south) / meta.height));
-  const ox = p[0], oy = p[1];
+  const want = componentNear(state.origin.lat, state.origin.lon);
+  if (!want) return null;
 
-  const x0 = Math.max(0, Math.floor(ox - rx));
-  const x1 = Math.min(meta.width - 1, Math.ceil(ox + rx));
-  const y0 = Math.max(0, Math.floor(oy - ry));
-  const y1 = Math.min(meta.height - 1, Math.ceil(oy + ry));
-
-  const start = snapToLand(Math.round(ox), Math.round(oy));
-  if (!start) return null;
-  const land = landReach(start[0], start[1], x0, y0, x1, y1);
-
-  let best = 0, bx = -1, by = -1;
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const i = y * meta.width + x;
-      const v = grid[i];
-      if (v <= best) continue;                      // cheapest test first
-      if (reach[i] * meta.reach_step_m > MAX_BUSH_M) continue;   // no trackless pins
-      if (!land.seen[land.idx(x, y)]) continue;     // no boats
-      const ll = toLL(x + 0.5, y + 0.5);
-      const dx = (ll[1] - state.origin.lon) * mPerDegLon;
-      const dy = (ll[0] - state.origin.lat) * mPerDegLat;
-      if (dx * dx + dy * dy > reachM * reachM) continue;
-      best = v; bx = x; by = y;
-    }
+  // Peaks are sorted furthest-from-anything first, so the FIRST one that is in range
+  // and on the same landmass is the answer. There is no need to look at the rest.
+  for (let i = 0; i < P.n; i++) {
+    if (P.c[i] !== want) continue;
+    const lat = P.lat[i] / P.s, lon = P.lon[i] / P.s;
+    const dx = (lon - state.origin.lon) * mPerDegLon;
+    const dy = (lat - state.origin.lat) * mPerDegLat;
+    if (dx * dx + dy * dy > reachM * reachM) continue;
+    return {
+      lat: lat, lon: lon, dist_m: P.d[i], offtrack_m: P.off[i], reachM: reachM,
+      access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
+    };
   }
-  if (bx < 0) return null;
-
-  const ll = toLL(bx + 0.5, by + 0.5);
-  return {
-    lat: ll[0], lon: ll[1], dist_m: best * meta.step_m,
-    offtrack_m: reach[by * meta.width + bx] * meta.reach_step_m,
-    reachM: reachM, access: walkOut(bx, by),
-  };
-}
-
-/* Follow the distance field downhill to find the way in.
- *
- * The value at a cell is its distance to the nearest anything, so stepping to the
- * lowest neighbour repeatedly arrives at that nearest thing - which is the road or
- * track you would park on. It needs no extra data shipped to the browser.
- */
-function walkOut(x, y) {
-  const path = [[x, y]];
-  for (let i = 0; i < 4000; i++) {
-    let bv = at(x, y), nx = x, ny = y;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const v = at(x + dx, y + dy);
-        if (v > 0 && v < bv) { bv = v; nx = x + dx; ny = y + dy; }
-      }
-    }
-    if (nx === x && ny === y) break;
-    x = nx; y = ny; path.push([x, y]);
-    if (bv <= 1) break;
-  }
-  const ll = toLL(x + 0.5, y + 0.5);
-  return {
-    lat: ll[0], lon: ll[1],
-    path: path.map((p) => toLL(p[0] + 0.5, p[1] + 0.5)),
-  };
+  return null;
 }
 
 /* ---------- rendering ---------- */
@@ -251,9 +113,7 @@ function render() {
   $("#origin-ll").textContent =
     state.origin.lat.toFixed(3) + ", " + state.origin.lon.toFixed(3);
 
-  ["target", "access", "line", "reach"].forEach((k) => {
-    if (layers[k]) { map.removeLayer(layers[k]); layers[k] = null; }
-  });
+  if (layers.target) { map.removeLayer(layers.target); layers.target = null; }
   if (!a) {
     box.className = "empty";
     box.textContent = "Nothing in range yet. South East Queensland is mapped "
@@ -262,6 +122,12 @@ function render() {
   }
 
   const m = MODES[state.mode];
+  const gmaps = "https://www.google.com/maps/dir/?api=1&origin=" +
+    state.origin.lat.toFixed(5) + "," + state.origin.lon.toFixed(5) +
+    "&destination=" + a.access.lat.toFixed(5) + "," + a.access.lon.toFixed(5) +
+    "&travelmode=" + (state.mode === "car" ? "driving"
+      : state.mode === "bike" ? "bicycling" : "walking");
+
   box.className = "";
   box.innerHTML =
     '<div class="big">' + fmtKm(a.dist_m) + " <span>from anything</span></div>" +
@@ -272,13 +138,8 @@ function render() {
       "</b>, the last built ground on the way.</li>" +
     "<li>Then walk about <b>" + fmtKm(a.dist_m) + "</b> - tracks most of the way, " +
       "the last <b>" + fmtKm(a.offtrack_m) + "</b> off them.</li>" +
-    '<li><a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1' +
-      "&origin=" + state.origin.lat.toFixed(5) + "," + state.origin.lon.toFixed(5) +
-      "&destination=" + a.access.lat.toFixed(5) + "," + a.access.lon.toFixed(5) +
-      "&travelmode=" + (state.mode === "car" ? "driving"
-        : state.mode === "bike" ? "bicycling" : "walking") +
-      '">Directions to the drop-off</a>' +
-    ' &middot; <a target="_blank" rel="noopener" ' +
+    '<li><a target="_blank" rel="noopener" href="' + gmaps + '">Directions to the ' +
+      'drop-off</a> &middot; <a target="_blank" rel="noopener" ' +
       'href="https://www.google.com/maps/search/?api=1&query=' +
       a.lat.toFixed(5) + "," + a.lon.toFixed(5) + '">the spot itself</a></li>' +
     "</ul>";
@@ -310,34 +171,9 @@ function render() {
     "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/" +
     "MapServer/tile/{z}/{y}/{x}",
     { maxZoom: 17, opacity: 0.9, attribution: "Imagery &copy; Esri" });
-  const bounds = [[meta.south, meta.west], [meta.north, meta.east]];
-
-  // The shading is OFF by default and only built when first asked for. It is a whole
-  // extra image the browser recomposites on every pan and zoom frame, and most of the
-  // time you want to read the map, not the field. Building it lazily also keeps it out
-  // of first paint.
-  function palette() { return $("#satellite").checked ? "sat" : "map"; }
-  function syncField() {
-    const want = $("#shade").checked;
-    if (want && !field) {
-      if (!overlays) overlays = {};
-      overlays[palette()] = overlays[palette()] || overlayURL(palette());
-      field = L.imageOverlay(overlays[palette()], bounds,
-        { opacity: 0.85, interactive: false }).addTo(map);
-    } else if (want && field) {
-      overlays[palette()] = overlays[palette()] || overlayURL(palette());
-      field.setUrl(overlays[palette()]);
-      field.bringToFront();
-    } else if (!want && field) {
-      map.removeLayer(field); field = null;
-    }
-  }
-
   $("#satellite").addEventListener("change", (e) => {
     if (e.target.checked) sat.addTo(map); else map.removeLayer(sat);
-    syncField();
   });
-  $("#shade").addEventListener("change", syncField);
 
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
