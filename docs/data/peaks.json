@@ -1,14 +1,9 @@
 {
- "serve": [
-  -28.6,
-  151.6,
-  -25.8,
-  153.6
- ],
+ "count": 188089,
+ "coord_scale": 100000.0,
+ "dist_scale_m": 10,
  "max_bush_m": 300,
  "spacing_m": 1000,
- "count": 29743,
- "coord_scale": 100000.0,
  "fields": [
   "lat:i4",
   "lon:i4",
@@ -19,12 +14,14 @@
   "c:u2"
  ],
  "comp": {
-  "width": 159,
-  "height": 223,
-  "north": -25.2,
-  "west": 151.0,
-  "south": -29.200000000000003,
-  "east": 154.2
+  "width": 1056,
+  "height": 987,
+  "south": -44.5,
+  "west": 112.0,
+  "north": -9.0,
+  "east": 154.5,
+  "bytes": 1
  },
- "max_m": 9437.16015625
+ "max_m": 176704.5625,
+ "area": "Australia"
 }

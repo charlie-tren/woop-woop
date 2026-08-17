@@ -44,11 +44,19 @@ async function load() {
   const d = take(Uint16Array, n), off = take(Uint16Array, n);
   const alat = take(Int32Array, n), alon = take(Int32Array, n);
   const c = take(Uint16Array, n);
-  P = { n: n, s: meta.coord_scale, lat: lat, lon: lon, d: d, off: off,
-        alat: alat, alon: alon, c: c };
+  P = { n: n, s: meta.coord_scale, ds: meta.dist_scale_m || 1,
+        lat: lat, lon: lon, d: d, off: off, alat: alat, alon: alon, c: c };
 
+  // One byte per cell unless the manifest says otherwise. The component ids are
+  // renumbered by landmass size at build time, so a byte covers every landmass anyone
+  // can actually reach - reading this as 16-bit silently halves the grid and every
+  // lookup lands in the wrong hemisphere.
   const cb = await (await fetch(DATA + "peaks-comp.bin")).arrayBuffer();
-  comp = new Uint16Array(cb);
+  comp = (meta.comp.bytes === 2) ? new Uint16Array(cb) : new Uint8Array(cb);
+  const need = meta.comp.width * meta.comp.height;
+  if (comp.length !== need) {
+    throw new Error("component grid is " + comp.length + " cells, manifest says " + need);
+  }
 }
 
 /* Which landmass a point is on. Islands get their own id, so "can I get there without
@@ -62,23 +70,32 @@ function componentAt(lat, lon) {
   return comp[y * g.width + x];
 }
 
-/* If the click lands in water or off the edge, search outwards until it does not. */
+/* Which landmass to answer for, when the exact cell is unhelpful.
+ *
+ * Component ids are ranked by landmass size at build time - 1 is the mainland - so
+ * taking the LOWEST non-zero id nearby means "the biggest landmass within reach of
+ * this point". Taking the nearest non-zero instead put Brisbane on component 150, a
+ * sand island offshore, because a 4 km grid cell centred on the CBD lands in the river
+ * mouth; every answer then came from that island and more time changed nothing.
+ */
 function componentNear(lat, lon) {
-  const direct = componentAt(lat, lon);
-  if (direct) return direct;
   const g = meta.comp;
   const stepLat = (g.north - g.south) / g.height;
   const stepLon = (g.east - g.west) / g.width;
-  for (let r = 1; r <= 25; r++) {
+  let best = 0;
+  for (let r = 0; r <= 25; r++) {
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
-        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        if (r > 0 && Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
         const v = componentAt(lat - dy * stepLat, lon + dx * stepLon);
-        if (v) return v;
+        if (v && (best === 0 || v < best)) best = v;
       }
     }
+    // Keep widening a little past the first hit, so a genuine island beside the
+    // mainland does not win purely by being one cell closer.
+    if (best && r >= 3) return best;
   }
-  return 0;
+  return best;
 }
 
 /* ---------- the query ---------- */
@@ -99,7 +116,8 @@ function solve() {
     const dy = (lat - state.origin.lat) * mPerDegLat;
     if (dx * dx + dy * dy > reachM * reachM) continue;
     return {
-      lat: lat, lon: lon, dist_m: P.d[i], offtrack_m: P.off[i], reachM: reachM,
+      lat: lat, lon: lon, dist_m: P.d[i] * P.ds, offtrack_m: P.off[i] * P.ds,
+      reachM: reachM,
       access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
     };
   }
@@ -116,8 +134,8 @@ function render() {
   if (layers.target) { map.removeLayer(layers.target); layers.target = null; }
   if (!a) {
     box.className = "empty";
-    box.textContent = "Nothing in range yet. South East Queensland is mapped "
-      + "first; the rest is being added.";
+    box.textContent = "Nothing in range. Try more time, or a start point in "
+      + "Australia - that is the extent of the map so far.";
     return;
   }
 
@@ -136,8 +154,8 @@ function render() {
     "<li>" + m.verb.charAt(0).toUpperCase() + m.verb.slice(1) + " to <b>" +
       a.access.lat.toFixed(4) + ", " + a.access.lon.toFixed(4) +
       "</b>, the last built ground on the way.</li>" +
-    "<li>Then walk about <b>" + fmtKm(a.dist_m) + "</b> - tracks most of the way, " +
-      "the last <b>" + fmtKm(a.offtrack_m) + "</b> off them.</li>" +
+    "<li>From there it is <b>" + fmtKm(a.dist_m) + "</b> further out - tracks " +
+      "most of the way, the last <b>" + fmtKm(a.offtrack_m) + "</b> off them.</li>" +
     '<li><a target="_blank" rel="noopener" href="' + gmaps + '">Directions to the ' +
       'drop-off</a> &middot; <a target="_blank" rel="noopener" ' +
       'href="https://www.google.com/maps/search/?api=1&query=' +

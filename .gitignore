@@ -1,6 +1,5 @@
-data/*.osm.pbf
-data/*.npy
-data/*.npz
+# The whole data directory is build scratch: the .osm.pbf, the per-chunk feature
+# buckets, the rasters, the preview renders. Only docs/data/ ships.
+data/
 __pycache__/
 .venv/
-data/*.png
