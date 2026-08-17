@@ -33,6 +33,7 @@ h1 img{height:30px; width:auto; display:block}
 @media (max-width:520px){ h1 img{height:24px} }
 header p{margin:0; color:var(--muted); font-size:13.5px}
 header a{color:var(--muted)}
+header a .back{color:var(--accent,#0b6b3a)}
 main{flex:1; display:flex; min-height:0}
 #map{flex:1; min-width:0; background:var(--bg)}
 aside{
@@ -75,7 +76,7 @@ a{color:var(--accent)}
 <header>
   <h1><img src="logo.svg" alt="Woop Woop" width="359" height="74"></h1>
   <p>The middle of nowhere, precisely located.</p>
-  <p style="margin-left:auto"><a href="https://charlietrenorden.com/">Other projects</a></p>
+  <p style="margin-left:auto"><a href="https://charlietrenorden.com/"><span class="back">&larr;</span>&nbsp;Other projects</a></p>
 </header>
 
 <main>
