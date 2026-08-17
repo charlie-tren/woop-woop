@@ -1,6 +1,6 @@
 # Woop Woop
 
-The middle of nowhere, precisely located.
+The emptiest place you can get to.
 
 Pick a starting point, a way of travelling and how long you have; get the spot in range
 that is furthest from every road, building, railway, power line and runway - and how to

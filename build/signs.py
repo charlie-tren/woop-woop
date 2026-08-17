@@ -70,7 +70,7 @@ HTML = """<!doctype html><meta charset="utf-8">
 <div class="row-wrap">
   <div class="big">{markup}</div>
   <div class="small">{markup}</div>
-  <div class="tag">The middle of nowhere, precisely located.</div>
+  <div class="tag">The emptiest place you can get to.</div>
   <div class="label">{name}</div>
 </div>"""
 
