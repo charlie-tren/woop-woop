@@ -72,14 +72,18 @@ def coarse():
     # fine labelling only splits on the COASTLINE, so a single lake cell lands on the
     # one enormous inland label and drags all of it under. Measured: 98.6% of the
     # Gympie chunk came back as water, and 660 peaks instead of ~30,000.
-    np.savez_compressed(f"{WORK}/coarse.npz", wet=wet, ocean=ocean,
+    # LAKES are saved too, filled at continent scale where nothing is clipped. A lake
+    # that straddles a chunk boundary has an open outline in the chunk below it, so the
+    # per-chunk fill cannot close it and the middle of the lake stays "land" - which is
+    # how Lake Eyre ended up holding the best answers in South Australia.
+    np.savez_compressed(f"{WORK}/coarse.npz", wet=wet, ocean=ocean, lakes=lakes,
                         comp=comp.astype(np.int32),
                         bbox=np.array(AUS), cell=COARSE)
     print(f"  -> {WORK}/coarse.npz")
 
 
 # ------------------------------------------------------------------ stage: chunks
-def one_chunk(i, box, coarse_ocean, coarse_comp, cg):
+def one_chunk(i, box, coarse_ocean, coarse_lakes, coarse_comp, cg):
     d = read_chunk(f"{WORK}/c{i:03d}.bin")
     if d is None:
         return 0
@@ -112,7 +116,22 @@ def one_chunk(i, box, coarse_ocean, coarse_comp, cg):
     wet_labels = np.unique(lab[seed & (lab > 0)])
     wet = np.isin(lab, wet_labels)
     if (kind == "water").any():
-        wet |= ndimage.binary_fill_holes(burn(g, lon, lat, off, kind == "water"))
+        fine_water = burn(g, lon, lat, off, kind == "water")
+        # Small lakes close on their own outline, so a plain fill handles them.
+        wet |= ndimage.binary_fill_holes(fine_water)
+        # Big ones do not, when the chunk cuts them in half, so the globally-filled
+        # coarse mask is used DIRECTLY - no labelling, no seeding.
+        #
+        # Label-and-seed is right for the ocean because the coastline is a complete
+        # barrier with sea on one side. It is catastrophically wrong for lakes: outside
+        # the lake outlines there is ONE enormous label covering the whole continent,
+        # so a single seed cell landing a hair outside a shore floods everything.
+        # Measured: it took the country from 1.09M peaks to 9.
+        #
+        # Using the coarse mask directly costs 2 km of precision at a lake shore, which
+        # is the right trade - it can only ever over-mark water near a shoreline, and
+        # never invert.
+        wet |= coarse_lakes[cy, cx]
 
     # Only the chunk's OWN box is answerable; the buffer exists so the edges of that
     # box measure correctly, and must never contribute peaks of its own.
@@ -160,12 +179,13 @@ def chunks_stage():
     c = np.load(f"{WORK}/coarse.npz")
     cg = Grid(tuple(c["bbox"]), float(c["cell"]))
     ocean = ndimage.binary_erosion(c["ocean"], iterations=2)
+    lakes = c["lakes"]     # used directly, so no erosion
     comp = c["comp"]
     total, t0 = 0, time.time()
     for i, box in enumerate(cfg["boxes"]):
         if os.path.exists(f"{PEAK_DIR}/p{i:03d}.npy"):
             continue
-        n = one_chunk(i, box, ocean, comp, cg)
+        n = one_chunk(i, box, ocean, lakes, comp, cg)
         total += n
         print(f"  chunk {i:3d} {str(box):32} {n:6d} peaks  "
               f"({time.time()-t0:.0f}s)", flush=True)

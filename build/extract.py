@@ -50,7 +50,11 @@ def want(tags):
     # always somewhere out at sea.
     if tags.get("natural") == "coastline":
         return "coast"
-    if (tags.get("natural") == "water" or tags.get("waterway") == "riverbank"
+    # Wetland is included. A claypan or a swamp is not somewhere to send anyone, and
+    # the biggest wetlands in the country - the Bulloo overflow, the Coongie Lakes -
+    # were producing 20 km answers in the middle of a marsh.
+    if (tags.get("natural") in ("water", "wetland")
+            or tags.get("waterway") == "riverbank"
             or tags.get("landuse") == "reservoir"):
         return "water"
     return None

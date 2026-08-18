@@ -1,5 +1,5 @@
 {
- "count": 188089,
+ "count": 166047,
  "coord_scale": 100000.0,
  "dist_scale_m": 10,
  "max_bush_m": 300,
@@ -23,5 +23,6 @@
   "bytes": 1
  },
  "max_m": 176704.5625,
- "area": "Australia"
+ "area": "Australia",
+ "water_sieve": "assembled polygons, osmium areas + shapely"
 }

@@ -119,8 +119,42 @@ def read_chunk(path):
             np.array(offs, dtype=np.int64), np.array(kinds))
 
 
+def water_relation_ways(pbf):
+    """Way ids belonging to a water MULTIPOLYGON.
+
+    Big lakes are relations in OSM, not closed ways - Lake Argyle, Lake Way, Lake
+    Samsonvale, 33,769 of them in Australia alone - and a pass that reads only ways
+    never sees any of them. The consequence is not subtle: the emptiest point in a
+    region is very often the middle of its largest lake, so the answer was landing on
+    open water.
+
+    Tagging the MEMBER ways as water is enough. Each member is an open line, but their
+    union closes the ring, so the existing fill turns them into a filled lake without
+    any polygon assembly.
+    """
+    t0 = time.time()
+    ids = set()
+    fp = (osmium.FileProcessor(pbf)
+          .with_filter(osmium.filter.EntityFilter(osmium.osm.RELATION))
+          .with_filter(osmium.filter.EmptyTagFilter()))
+    n = 0
+    for r in fp:
+        t = r.tags
+        if (t.get("natural") in ("water", "wetland")
+                or t.get("landuse") == "reservoir"
+                or t.get("waterway") == "riverbank"):
+            n += 1
+            for m in r.members:
+                if m.type == "w":
+                    ids.add(m.ref)
+    print(f"  {n:,} water relations -> {len(ids):,} member ways "
+          f"({time.time()-t0:.0f}s)", flush=True)
+    return ids
+
+
 def bucket(pbf, boxes):
     b = Bucketer(boxes, WORK)
+    water_ways = water_relation_ways(pbf)
     t0 = time.time()
     fp = (osmium.FileProcessor(pbf)
           .with_locations()
@@ -133,6 +167,8 @@ def bucket(pbf, boxes):
             print(f"  {n/1e6:.0f}M ways, {b.total/1e6:.0f}M vertices kept, "
                   f"{time.time()-t0:.0f}s", flush=True)
         kind = want(w.tags)
+        if kind is None and w.id in water_ways:
+            kind = "water"          # a member of a lake multipolygon
         if kind is None:
             continue
         lons, lats = [], []
