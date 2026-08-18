@@ -3,3 +3,12 @@
 data/
 __pycache__/
 .venv/
+
+# Anything here holds a live credential in plain text. Ignored as a DIRECTORY and by
+# extension, so a new file in it cannot be added by a careless `git add -A`.
+secrets/
+*.key
+.env
+.env.*
+node_modules/
+.wrangler/

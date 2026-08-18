@@ -1,0 +1,10 @@
+name = "woop-woop-iso"
+main = "src/index.js"
+compatibility_date = "2026-08-19"
+
+# No secrets in this file, by design. ORS_KEY is set with
+#   npx wrangler secret put ORS_KEY
+# which stores it encrypted on Cloudflare and never writes it to the repo.
+
+[observability]
+enabled = true
