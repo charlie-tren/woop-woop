@@ -16,10 +16,14 @@ const DATA = "data/";
 // Average progress, not top speed - a car does not hold 100 km/h on the way out of
 // town. Marked as an estimate in the UI because it IS one: the real version asks a
 // routing engine which roads exist and how fast they are.
+// maxOff is how far off a road or track the spot may sit, and it depends on how you
+// got there. Three hundred metres of scrub is nothing at the end of a day's drive and
+// completely unreasonable at the end of an hour's walk in a city, which is why walking
+// answers kept landing in the middle of a forest with no way in.
 const MODES = {
-  foot: { label: "Walk", verb: "walk", kmh: 4.5, detour: 0.80 },
-  bike: { label: "Ride", verb: "ride", kmh: 15.0, detour: 0.75 },
-  car: { label: "Drive", verb: "drive", kmh: 70.0, detour: 0.70 },
+  foot: { label: "Walk", verb: "walk", kmh: 4.5, detour: 0.80, maxOff: 150 },
+  bike: { label: "Ride", verb: "ride", kmh: 15.0, detour: 0.75, maxOff: 150 },
+  car: { label: "Drive", verb: "drive", kmh: 70.0, detour: 0.70, maxOff: 300 },
 };
 
 const state = {
@@ -107,21 +111,50 @@ function solve() {
   const want = componentNear(state.origin.lat, state.origin.lon);
   if (!want) return null;
 
-  // Peaks are sorted furthest-from-anything first, so the FIRST one that is in range
-  // and on the same landmass is the answer. There is no need to look at the rest.
+  // Peaks are sorted furthest-from-anything first, so the FIRST one in range is the
+  // answer. While scanning, also remember the nearest peak that qualifies but is out
+  // of range - so that when nothing is reachable there is still something to show.
+  //
+  // Without that fallback the page just said "nothing in range", which was true and
+  // useless: 84% of hour-long WALKS from a capital hit it, because an hour on foot
+  // genuinely does not reach anywhere empty. Better to show the nearest real answer
+  // and say honestly how long it would take.
+  let nearest = null, nearestM = Infinity;
   for (let i = 0; i < P.n; i++) {
     if (P.c[i] !== want) continue;
+    if (P.off[i] * P.ds > m.maxOff) continue;
     const lat = P.lat[i] / P.s, lon = P.lon[i] / P.s;
     const dx = (lon - state.origin.lon) * mPerDegLon;
     const dy = (lat - state.origin.lat) * mPerDegLat;
-    if (dx * dx + dy * dy > reachM * reachM) continue;
-    return {
-      lat: lat, lon: lon, dist_m: P.d[i] * P.ds, offtrack_m: P.off[i] * P.ds,
-      reachM: reachM,
-      access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
-    };
+    const away = Math.sqrt(dx * dx + dy * dy);
+    if (away <= reachM) {
+      return {
+        lat: lat, lon: lon, dist_m: P.d[i] * P.ds, offtrack_m: P.off[i] * P.ds,
+        reachM: reachM, awayM: away, overBudget: false,
+        access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
+      };
+    }
+    if (away < nearestM) {
+      nearestM = away;
+      nearest = {
+        lat: lat, lon: lon, dist_m: P.d[i] * P.ds, offtrack_m: P.off[i] * P.ds,
+        reachM: reachM, awayM: away, overBudget: true,
+        access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
+      };
+    }
   }
-  return null;
+  return nearest;
+}
+
+/* How long the trip to a point would actually take, in the chosen mode. */
+function minutesFor(m, metres) {
+  return metres / (m.kmh * 1000 * m.detour) * 60;
+}
+
+function fmtMins(mins) {
+  if (mins < 90) return Math.round(mins) + " min";
+  const h = mins / 60;
+  return (h < 10 ? h.toFixed(1) : Math.round(h)) + " h";
 }
 
 /* ---------- rendering ---------- */
@@ -147,7 +180,12 @@ function render() {
       : state.mode === "bike" ? "bicycling" : "walking");
 
   box.className = "";
-  box.innerHTML =
+  const over = a.overBudget
+    ? '<p class="over">Nothing empty is within ' + fmtMins(state.mins) + " " +
+      m.verb + " of here. The nearest is <b>" +
+      fmtMins(minutesFor(m, a.awayM)) + "</b> away.</p>"
+    : "";
+  box.innerHTML = over +
     '<div class="big">' + fmtKm(a.dist_m) + " <span>from anything</span></div>" +
     '<ul class="leg">' +
     "<li><b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b></li>" +

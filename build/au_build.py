@@ -210,7 +210,12 @@ def merge(out="docs/data/peaks.json"):
     # walking for an hour in a city with no answer at all, which reads as broken. So
     # they are kept at a much coarser spacing: every genuinely remote peak survives,
     # and cities keep one candidate every 5 km instead of one every kilometre.
-    KEEP_ALL_ABOVE, COARSE_SPACING_DEG = 500.0, 5.0 / 111.0
+    # 2 km, not 5. At 5 km the small peaks were so sparse that an hour's WALK - a
+    # 3.6 km radius - usually contained none of them at all, and the page simply said
+    # nothing was in range. Measured: 84% of walking queries from the five biggest
+    # cities returned no answer. 2 km costs about 2.5 MB more over the wire and makes
+    # the mode work.
+    KEEP_ALL_ABOVE, COARSE_SPACING_DEG = 500.0, 2.0 / 111.0
     strong = a[a[:, 2] >= KEEP_ALL_ABOVE]
     weak = a[a[:, 2] < KEEP_ALL_ABOVE]
     weak = weak[np.argsort(-weak[:, 2])]
