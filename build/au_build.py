@@ -13,9 +13,18 @@ sys.path.insert(0, "build")
 from au import WORK, AUS, BUFFER, CELL, COARSE, read_chunk
 from raster import Grid, burn, ANYTHING, ACCESS
 
-MAX_BUSH_M = 300
+# ON the path network, not near it. A spot 140 m into scrub is not somewhere Google
+# Maps can navigate you to, and "walk to the coordinates and then bush-bash" is not an
+# answer. Requiring reach == 0 means every peak sits on a road, track or footpath, so
+# the whole trip is navigable. Roads and buildings are still what the distance is
+# measured TO, so the winners are points on fire trails and walking tracks a long way
+# from anything built.
+ON_NETWORK = True
 SPACING_M = 1000
-MIN_DIST_M = 100
+# No floor. The question is "the MOST empty place you can get to", not "an empty place":
+# in a dense city the honest answer is a spot 80 m from a road, and a 100 m floor
+# deleted those, which is why walking from a capital so often had no answer at all.
+MIN_DIST_M = 0
 DIST_SCALE_M = 10    # units the packed distances are stored in
 PEAK_DIR = f"{WORK}/peaks"
 
@@ -83,7 +92,7 @@ def coarse():
 
 
 # ------------------------------------------------------------------ stage: chunks
-def one_chunk(i, box, coarse_ocean, coarse_lakes, coarse_comp, cg):
+def one_chunk(i, box, coarse_ocean, coarse_comp, cg):
     d = read_chunk(f"{WORK}/c{i:03d}.bin")
     if d is None:
         return 0
@@ -119,19 +128,16 @@ def one_chunk(i, box, coarse_ocean, coarse_lakes, coarse_comp, cg):
         fine_water = burn(g, lon, lat, off, kind == "water")
         # Small lakes close on their own outline, so a plain fill handles them.
         wet |= ndimage.binary_fill_holes(fine_water)
-        # Big ones do not, when the chunk cuts them in half, so the globally-filled
-        # coarse mask is used DIRECTLY - no labelling, no seeding.
+        # Big lakes clipped by a chunk boundary are NOT handled here, and deliberately
+        # so. Two rasters attempts both failed in opposite directions: label-and-seed
+        # from the coarse mask flooded the continent (1.09M peaks -> 9), and using the
+        # coarse fill directly marked all of Brisbane as water, because at 2 km the
+        # river, the bay and the city's ponds form a ring and binary_fill_holes fills
+        # everything inside it. Measured: 100% of a 12 km box over the CBD.
         #
-        # Label-and-seed is right for the ocean because the coastline is a complete
-        # barrier with sea on one side. It is catastrophically wrong for lakes: outside
-        # the lake outlines there is ONE enormous label covering the whole continent,
-        # so a single seed cell landing a hair outside a shore floods everything.
-        # Measured: it took the country from 1.09M peaks to 9.
-        #
-        # Using the coarse mask directly costs 2 km of precision at a lake shore, which
-        # is the right trade - it can only ever over-mark water near a shoreline, and
-        # never invert.
-        wet |= coarse_lakes[cy, cx]
+        # The polygon sieve in build/check_water.py is the authority on water anyway -
+        # it assembles real multipolygons instead of guessing from a grid - so the
+        # raster only has to be roughly right and the sieve removes the rest.
 
     # Only the chunk's OWN box is answerable; the buffer exists so the edges of that
     # box measure correctly, and must never contribute peaks of its own.
@@ -140,7 +146,7 @@ def one_chunk(i, box, coarse_ocean, coarse_lakes, coarse_comp, cg):
     x1, y1 = g.to_px(box[3], box[0])
     own[max(0, int(np.ceil(y0))):int(y1), max(0, int(np.ceil(x0))):int(x1)] = True
 
-    ok = own & (~wet) & (reach <= MAX_BUSH_M) & (dist >= MIN_DIST_M)
+    ok = own & (~wet) & (reach <= 0.0) & (dist >= MIN_DIST_M)
     if not ok.any():
         return 0
 
@@ -179,13 +185,12 @@ def chunks_stage():
     c = np.load(f"{WORK}/coarse.npz")
     cg = Grid(tuple(c["bbox"]), float(c["cell"]))
     ocean = ndimage.binary_erosion(c["ocean"], iterations=2)
-    lakes = c["lakes"]     # used directly, so no erosion
     comp = c["comp"]
     total, t0 = 0, time.time()
     for i, box in enumerate(cfg["boxes"]):
         if os.path.exists(f"{PEAK_DIR}/p{i:03d}.npy"):
             continue
-        n = one_chunk(i, box, ocean, lakes, comp, cg)
+        n = one_chunk(i, box, ocean, comp, cg)
         total += n
         print(f"  chunk {i:3d} {str(box):32} {n:6d} peaks  "
               f"({time.time()-t0:.0f}s)", flush=True)
@@ -274,7 +279,7 @@ def merge(out="docs/data/peaks.json"):
     s_, w_, n_, e_ = [float(v) for v in c["bbox"]]
     json.dump({
         "count": n, "coord_scale": 1e5, "dist_scale_m": DIST_SCALE_M,
-        "max_bush_m": MAX_BUSH_M, "spacing_m": SPACING_M,
+        "on_network": ON_NETWORK, "spacing_m": SPACING_M,
         "fields": ["lat:i4", "lon:i4", "d:u2", "off:u2", "alat:i4", "alon:i4", "c:u2"],
         "comp": {"width": int(small.shape[1]), "height": int(small.shape[0]),
                  "south": s_, "west": w_, "north": n_, "east": e_,

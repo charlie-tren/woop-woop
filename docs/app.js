@@ -16,14 +16,10 @@ const DATA = "data/";
 // Average progress, not top speed - a car does not hold 100 km/h on the way out of
 // town. Marked as an estimate in the UI because it IS one: the real version asks a
 // routing engine which roads exist and how fast they are.
-// maxOff is how far off a road or track the spot may sit, and it depends on how you
-// got there. Three hundred metres of scrub is nothing at the end of a day's drive and
-// completely unreasonable at the end of an hour's walk in a city, which is why walking
-// answers kept landing in the middle of a forest with no way in.
 const MODES = {
-  foot: { label: "Walk", verb: "walk", kmh: 4.5, detour: 0.80, maxOff: 150 },
-  bike: { label: "Ride", verb: "ride", kmh: 15.0, detour: 0.75, maxOff: 150 },
-  car: { label: "Drive", verb: "drive", kmh: 70.0, detour: 0.70, maxOff: 300 },
+  foot: { label: "Walk", verb: "walk", kmh: 4.5, detour: 0.80 },
+  bike: { label: "Ride", verb: "ride", kmh: 15.0, detour: 0.75 },
+  car: { label: "Drive", verb: "drive", kmh: 70.0, detour: 0.70 },
 };
 
 const state = {
@@ -122,7 +118,6 @@ function solve() {
   let nearest = null, nearestM = Infinity;
   for (let i = 0; i < P.n; i++) {
     if (P.c[i] !== want) continue;
-    if (P.off[i] * P.ds > m.maxOff) continue;
     const lat = P.lat[i] / P.s, lon = P.lon[i] / P.s;
     const dx = (lon - state.origin.lon) * mPerDegLon;
     const dy = (lat - state.origin.lat) * mPerDegLat;
@@ -173,6 +168,11 @@ function render() {
   }
 
   const m = MODES[state.mode];
+  // Every spot now sits ON a road, track or footpath, so the second link can ask for
+  // directions to the spot itself rather than only to the last drivable point.
+  const gwalk = "https://www.google.com/maps/dir/?api=1&travelmode=walking&origin=" +
+    a.access.lat.toFixed(5) + "," + a.access.lon.toFixed(5) +
+    "&destination=" + a.lat.toFixed(5) + "," + a.lon.toFixed(5);
   const gmaps = "https://www.google.com/maps/dir/?api=1&origin=" +
     state.origin.lat.toFixed(5) + "," + state.origin.lon.toFixed(5) +
     "&destination=" + a.access.lat.toFixed(5) + "," + a.access.lon.toFixed(5) +
@@ -192,12 +192,11 @@ function render() {
     "<li>" + m.verb.charAt(0).toUpperCase() + m.verb.slice(1) + " to <b>" +
       a.access.lat.toFixed(4) + ", " + a.access.lon.toFixed(4) +
       "</b>, the last built ground on the way.</li>" +
-    "<li>From there it is <b>" + fmtKm(a.dist_m) + "</b> further out - tracks " +
-      "most of the way, the last <b>" + fmtKm(a.offtrack_m) + "</b> off them.</li>" +
+    "<li>Then <b>" + fmtKm(a.dist_m) + "</b> along tracks. The spot is ON a track, " +
+      "so you can follow it the whole way.</li>" +
     '<li><a target="_blank" rel="noopener" href="' + gmaps + '">Directions to the ' +
-      'drop-off</a> &middot; <a target="_blank" rel="noopener" ' +
-      'href="https://www.google.com/maps/search/?api=1&query=' +
-      a.lat.toFixed(5) + "," + a.lon.toFixed(5) + '">the spot itself</a></li>' +
+      'drop-off</a> &middot; <a target="_blank" rel="noopener" href="' + gwalk +
+      '">walking directions to the spot</a></li>' +
     "</ul>";
 
   layers.target = L.circleMarker([a.lat, a.lon], {
