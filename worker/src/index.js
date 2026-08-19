@@ -61,7 +61,12 @@ export default {
     if (request.method !== "POST") {
       return bad("POST only", 405, origin);
     }
-    if (origin && !ALLOWED.has(origin)) {
+    // An ABSENT Origin is rejected too, not just a wrong one. The page is on
+    // charlietrenorden.com and this Worker is on workers.dev, so every real request is
+    // cross-origin and browsers always send the header; anything without one is a
+    // script, and a script can drain 500 isochrones in a minute. Measured before this
+    // check went in: a plain curl with no Origin got a 200.
+    if (!ALLOWED.has(origin)) {
       return bad("origin not allowed", 403, origin);
     }
     if (!env.ORS_KEY) {
