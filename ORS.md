@@ -48,6 +48,16 @@ header, `locations` as `[[lon, lat]]` (longitude FIRST), `range` in seconds, and
 `range_type: "time"`. Profiles map to the three modes as
 `foot-walking`, `cycling-regular`, `driving-car`.
 
+## Isochrones stop at one hour
+
+Measured on 19/08/2026: a range above 3600 seconds is refused with error 3004,
+"Parameter 'range=4200.0' is out of range. Maximum possible value is 3600." This is not
+a routing failure and not a quota - it is a hard ceiling on the free plan, and it first
+showed up looking like two random "no route" errors on 120-minute requests.
+
+The time control goes to four hours, so above one hour the real-roads check cannot
+answer at all. The page says so rather than falling back silently.
+
 ## Why it goes in a Worker
 
 A key in `app.js` is a key anyone can read and spend, and 500 calls a day is a quota

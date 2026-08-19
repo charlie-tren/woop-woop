@@ -104,6 +104,7 @@ a{color:var(--accent)}
     <fieldset>
       <legend>Map</legend>
       <label class="check"><input type="checkbox" id="satellite"> Satellite imagery</label>
+      <label class="check"><input type="checkbox" id="exact"> Use real roads</label>
     </fieldset>
 
     <fieldset>
@@ -115,10 +116,11 @@ a{color:var(--accent)}
     <div id="answer" class="empty">Working it out&hellip;</div>
 
     <p class="caveat">
-      <strong>The travel range is an estimate for now.</strong> It assumes you make
-      average progress in every direction, so it is a circle rather than a real
-      road-by-road range. The emptiness measurement underneath it is exact, and
-      covers all of Australia.
+      <strong>The range is an estimate unless you ask for real roads.</strong> The
+      estimate assumes even progress in every direction, so it is a circle; the real
+      thing follows the road network and is measured to be 2 to 7 times less circular
+      than that. The emptiness underneath is exact either way, and covers all of
+      Australia.
     </p>
   </aside>
 </main>

@@ -25,7 +25,82 @@ const MODES = {
 const state = {
   mode: "car", mins: 60,
   origin: { lat: -27.4698, lon: 153.0251 },
+  exact: false,          // use the real road-network isochrone
+  iso: null,             // its rings, once fetched
+  isoNote: "",           // why it is not being used, if it is not
 };
+
+// The Worker holds the openrouteservice key. The page never sees it.
+const ISO_URL = "https://woop-woop-iso.charlie-tren.workers.dev";
+
+// Keyed the same way the Worker rounds - about 110 m - so nudging the map or the
+// slider back to somewhere already asked about costs nothing. The free plan allows
+// 500 isochrones a DAY, and a slider dragged across its range would spend fifty.
+const isoCache = new Map();
+
+// Measured, not read in a doc: openrouteservice refuses range > 3600 s with error 3004
+// ("Maximum possible value is 3600"). The time slider goes to four hours, so above an
+// hour the real-roads check simply cannot answer and the page has to say so rather
+// than quietly showing the estimate as though it were exact.
+const ISO_MAX_MINUTES = 60;
+const isoKey = (o, mode, mins) =>
+  mode + "|" + mins + "|" + o.lat.toFixed(3) + "|" + o.lon.toFixed(3);
+
+async function fetchIsochrone(origin, mode, mins) {
+  const k = isoKey(origin, mode, mins);
+  if (isoCache.has(k)) return isoCache.get(k);
+  const res = await fetch(ISO_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: mode, lat: origin.lat, lon: origin.lon,
+                           seconds: mins * 60 }),
+  });
+  if (!res.ok) {
+    // 429 is the daily quota; anything else out here is usually openrouteservice
+    // failing to route from a remote track, which the calibration hit 6 times in 108.
+    const err = new Error(res.status === 429 ? "quota" : "route");
+    err.code = res.status;
+    throw err;
+  }
+  const geo = await res.json();
+  const rings = geo.features[0].geometry.coordinates;
+  isoCache.set(k, rings);
+  return rings;
+}
+
+/* Ray casting, outer ring minus holes. The isochrone is the real reachable set, so
+ * "can I get there" stops being a radius and becomes a containment test. */
+function inRing(lat, lon, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0], yi = ring[i][1];
+    const xj = ring[j][0], yj = ring[j][1];
+    if ((yi > lat) !== (yj > lat) &&
+        lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function inIsochrone(lat, lon, rings) {
+  if (!inRing(lat, lon, rings[0])) return false;
+  for (let r = 1; r < rings.length; r++) {
+    if (inRing(lat, lon, rings[r])) return false;   // a hole
+  }
+  return true;
+}
+
+function ringBounds(ring) {
+  let s = 90, w = 180, n = -90, e = -180;
+  for (const p of ring) {
+    if (p[1] < s) s = p[1];
+    if (p[1] > n) n = p[1];
+    if (p[0] < w) w = p[0];
+    if (p[0] > e) e = p[0];
+  }
+  return { s: s, w: w, n: n, e: e };
+}
 let meta, P, comp, map, layers = {};
 
 const $ = (s) => document.querySelector(s);
@@ -107,14 +182,13 @@ function solve() {
   const want = componentNear(state.origin.lat, state.origin.lon);
   if (!want) return null;
 
-  // Peaks are sorted furthest-from-anything first, so the FIRST one in range is the
-  // answer. While scanning, also remember the nearest peak that qualifies but is out
-  // of range - so that when nothing is reachable there is still something to show.
-  //
-  // Without that fallback the page just said "nothing in range", which was true and
-  // useless: 84% of hour-long WALKS from a capital hit it, because an hour on foot
-  // genuinely does not reach anywhere empty. Better to show the nearest real answer
-  // and say honestly how long it would take.
+  // With a real isochrone, reachability is containment in the polygon rather than a
+  // radius - which matters more than it sounds. The measured shape is 2 to 7.5 times
+  // less circular than a disc, so the two tests disagree constantly: the circle both
+  // includes country with no road to it and excludes places an hour up a highway.
+  const rings = state.exact ? state.iso : null;
+  const bb = rings ? ringBounds(rings[0]) : null;
+
   let nearest = null, nearestM = Infinity;
   for (let i = 0; i < P.n; i++) {
     if (P.c[i] !== want) continue;
@@ -122,10 +196,21 @@ function solve() {
     const dx = (lon - state.origin.lon) * mPerDegLon;
     const dy = (lat - state.origin.lat) * mPerDegLat;
     const away = Math.sqrt(dx * dx + dy * dy);
-    if (away <= reachM) {
+
+    let reachable;
+    if (rings) {
+      // Bounding box first: the polygon test is the expensive one and most peaks are
+      // nowhere near it.
+      reachable = lat >= bb.s && lat <= bb.n && lon >= bb.w && lon <= bb.e &&
+                  inIsochrone(lat, lon, rings);
+    } else {
+      reachable = away <= reachM;
+    }
+
+    if (reachable) {
       return {
         lat: lat, lon: lon, dist_m: P.d[i] * P.ds, offtrack_m: P.off[i] * P.ds,
-        reachM: reachM, awayM: away, overBudget: false,
+        reachM: reachM, awayM: away, overBudget: false, exact: !!rings,
         access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
       };
     }
@@ -133,7 +218,7 @@ function solve() {
       nearestM = away;
       nearest = {
         lat: lat, lon: lon, dist_m: P.d[i] * P.ds, offtrack_m: P.off[i] * P.ds,
-        reachM: reachM, awayM: away, overBudget: true,
+        reachM: reachM, awayM: away, overBudget: true, exact: !!rings,
         access: { lat: P.alat[i] / P.s, lon: P.alon[i] / P.s },
       };
     }
@@ -159,7 +244,16 @@ function render() {
   $("#origin-ll").textContent =
     state.origin.lat.toFixed(3) + ", " + state.origin.lon.toFixed(3);
 
-  if (layers.target) { map.removeLayer(layers.target); layers.target = null; }
+  for (const k of ["target", "iso"]) {
+    if (layers[k]) { map.removeLayer(layers[k]); layers[k] = null; }
+  }
+  if (state.exact && state.iso) {
+    // Leaflet wants [lat, lon]; GeoJSON is [lon, lat].
+    layers.iso = L.polygon(
+      state.iso.map((r) => r.map((p) => [p[1], p[0]])),
+      { color: "#e2674a", weight: 1.5, opacity: 0.9, fillOpacity: 0.07,
+        interactive: false }).addTo(map);
+  }
   if (!a) {
     box.className = "empty";
     box.textContent = "Nothing in range. Try more time, or a start point in "
@@ -181,11 +275,14 @@ function render() {
 
   box.className = "";
   const over = a.overBudget
-    ? '<p class="over">Nothing empty is within ' + fmtMins(state.mins) + " " +
+    ? '<p class="over">Nothing in range within ' + fmtMins(state.mins) + " " +
       m.verb + " of here. The nearest is <b>" +
-      fmtMins(minutesFor(m, a.awayM)) + "</b> away.</p>"
+      fmtMins(minutesFor(m, a.awayM)) + "</b> away in a straight line.</p>"
     : "";
-  box.innerHTML = over +
+  const note = state.isoNote
+    ? '<p class="over">' + state.isoNote + "</p>"
+    : "";
+  box.innerHTML = note + over +
     '<div class="big">' + fmtKm(a.dist_m) + " <span>from anything</span></div>" +
     '<ul class="leg">' +
     "<li><b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b></li>" +
@@ -206,6 +303,47 @@ function render() {
   map.fitBounds(
     L.latLngBounds([[a.lat, a.lon], [state.origin.lat, state.origin.lon]]).pad(0.35),
     { animate: false });
+}
+
+/* Redraw immediately from the estimate, then fetch the real isochrone if asked.
+ *
+ * The API call is debounced and the drawing is not, so dragging the slider stays
+ * responsive and spends at most one call per pause. 20 requests a minute is the plan's
+ * limit and a dragged slider would fire hundreds.
+ */
+let isoTimer = null, isoSeq = 0;
+
+function refresh() {
+  render();
+  if (!state.exact) return;
+  clearTimeout(isoTimer);
+  if (state.mins > ISO_MAX_MINUTES) {
+    state.iso = null;
+    state.isoNote = "Real roads only go up to an hour - openrouteservice will not "
+      + "compute a longer one. This is the estimate.";
+    render();
+    return;
+  }
+  const seq = ++isoSeq;
+  state.isoNote = "Checking the real roads…";
+  render();
+  isoTimer = setTimeout(async () => {
+    const origin = { lat: state.origin.lat, lon: state.origin.lon };
+    const mode = state.mode, mins = state.mins;
+    try {
+      const rings = await fetchIsochrone(origin, mode, mins);
+      if (seq !== isoSeq) return;        // a newer request has overtaken this one
+      state.iso = rings;
+      state.isoNote = "";
+    } catch (err) {
+      if (seq !== isoSeq) return;
+      state.iso = null;
+      state.isoNote = err.message === "quota"
+        ? "The routing quota for today is gone, so this is the estimate again."
+        : "No route could be worked out from here, so this is the estimate.";
+    }
+    render();
+  }, 600);
 }
 
 /* ---------- wiring ---------- */
@@ -237,7 +375,7 @@ function render() {
     state.origin = { lat: e.latlng.lat, lon: e.latlng.lng };
     $("#origin-name").textContent = "Where you clicked";
     layers.origin.setLatLng(e.latlng);
-    render();
+    refresh();
   });
 
   document.querySelectorAll(".modes button").forEach((b) => {
@@ -245,7 +383,7 @@ function render() {
       state.mode = b.dataset.mode;
       document.querySelectorAll(".modes button").forEach((o) =>
         o.setAttribute("aria-pressed", String(o === b)));
-      render();
+      refresh();
     });
   });
 
@@ -255,7 +393,13 @@ function render() {
     const h = Math.floor(state.mins / 60), r = state.mins % 60;
     $("#mins-label").textContent = state.mins >= 60
       ? (h + " h" + (r ? " " + r + " min" : "")) : (state.mins + " min");
-    render();
+    refresh();
+  });
+
+  $("#exact").addEventListener("change", (e) => {
+    state.exact = e.target.checked;
+    if (!state.exact) { state.iso = null; state.isoNote = ""; }
+    refresh();
   });
 
   render();   // an answer is on screen before anyone touches a control
