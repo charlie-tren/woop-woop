@@ -9,9 +9,11 @@
  * Secret:  npx wrangler secret put ORS_KEY      (run this yourself; it is never logged)
  */
 
-// api.openrouteservice.org is deprecated in favour of api.heigit.org. Nearly every
-// tutorial still uses the old host.
-const UPSTREAM = "https://api.heigit.org/v2/isochrones";
+// The dashboard announces api.heigit.org as the replacement for
+// api.openrouteservice.org, but measured on 19/08/2026 the new host returns an nginx
+// 404 on both /v2/isochrones/... and /ors/v2/..., while the old one answers 200. The
+// notice is forward-looking. Re-test before switching.
+const UPSTREAM = "https://api.openrouteservice.org/v2/isochrones";
 
 const PROFILES = {
   foot: "foot-walking",
