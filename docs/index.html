@@ -104,7 +104,7 @@ a{color:var(--accent)}
     <fieldset>
       <legend>Map</legend>
       <label class="check"><input type="checkbox" id="satellite"> Satellite imagery</label>
-      <label class="check"><input type="checkbox" id="exact"> Use real roads</label>
+      <label class="check"><input type="checkbox" id="exact" checked> Use real roads</label>
     </fieldset>
 
     <fieldset>
@@ -116,11 +116,11 @@ a{color:var(--accent)}
     <div id="answer" class="empty">Working it out&hellip;</div>
 
     <p class="caveat">
-      <strong>The range is an estimate unless you ask for real roads.</strong> The
-      estimate assumes even progress in every direction, so it is a circle; the real
-      thing follows the road network and is measured to be 2 to 7 times less circular
-      than that. The emptiness underneath is exact either way, and covers all of
-      Australia.
+      <strong>Range follows the real road network, up to an hour.</strong> Beyond that
+      - or if the routing is unavailable - it falls back to a circle, which is a poor
+      substitute: measured against 84 real isochrones, no circle reproduces the right
+      answer more than about a third of the time. The emptiness measurement underneath
+      is exact either way, and covers all of Australia.
     </p>
   </aside>
 </main>

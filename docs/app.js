@@ -16,16 +16,25 @@ const DATA = "data/";
 // Average progress, not top speed - a car does not hold 100 km/h on the way out of
 // town. Marked as an estimate in the UI because it IS one: the real version asks a
 // routing engine which roads exist and how fast they are.
+// Fitted against 84 real isochrones, scoring on the ANSWER each radius produces
+// rather than on any geometric proxy. Two things came out of that:
+//
+// 1. No radius reproduces the isochrone's answer - best agreement was 14% walking,
+//    41% riding, 32% driving. A circle simply cannot express a road network, which is
+//    why the real check is now the default rather than an extra.
+// 2. The old numbers over-promised badly: at the previous settings the estimate named
+//    an unreachable spot in 24 of 28 driving cases. These are the values that minimise
+//    that, so when the estimate IS used it errs towards under-promising.
 const MODES = {
-  foot: { label: "Walk", verb: "walk", kmh: 4.5, detour: 0.80 },
-  bike: { label: "Ride", verb: "ride", kmh: 15.0, detour: 0.75 },
-  car: { label: "Drive", verb: "drive", kmh: 70.0, detour: 0.70 },
+  foot: { label: "Walk", verb: "walk", kmh: 1.8, detour: 1.0 },
+  bike: { label: "Ride", verb: "ride", kmh: 7.3, detour: 1.0 },
+  car: { label: "Drive", verb: "drive", kmh: 22.0, detour: 1.0 },
 };
 
 const state = {
   mode: "car", mins: 60,
   origin: { lat: -27.4698, lon: 153.0251 },
-  exact: false,          // use the real road-network isochrone
+  exact: true,           // use the real road-network isochrone
   iso: null,             // its rings, once fetched
   isoNote: "",           // why it is not being used, if it is not
 };
@@ -402,5 +411,8 @@ function refresh() {
     refresh();
   });
 
-  render();   // an answer is on screen before anyone touches a control
+  // refresh(), not render(): render alone paints the estimate and never asks for the
+  // isochrone, so with real roads on by default the first view silently showed the
+  // fallback and drew no polygon.
+  refresh();  // an answer is on screen before anyone touches a control
 })();
