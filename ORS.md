@@ -91,3 +91,45 @@ What this does justify is the runtime exact-check: the shape is the whole story,
 only the real polygon has it. One further correction worth folding in whenever the
 model is next touched - openrouteservice walks at about 5 km/h, not the 4.5 assumed
 here, which is most of why the walking tip beats the assumed radius.
+
+## Water spill: what the isochrone actually does, measured 26/08/2026
+
+The first diagnosis here was wrong in two ways and is corrected below. Both errors came
+from the same habit: quoting a number off a mask without asking what the mask can
+resolve, and asserting a mechanism without testing it.
+
+**Ferries are not a cause.** The claim was that a ferry puts unreachable land inside the
+shape and drags the hull over the bay to connect it. Tested against the Brisbane 60 min
+drive by point-in-polygon on every ferry-only island around the city - Dunwich and Point
+Lookout on North Stradbroke, Russell, Macleay - and the isochrone contained NONE of
+them. The easternmost vertex of the whole shape is on land. `avoid_features: ["ferries"]`
+was removed again rather than kept as cheap insurance, because the page hands the user
+Google Maps driving directions and those do route over ferries: suppressing them here
+would make the reachable set disagree with the directions offered for reaching it.
+
+**Most of the headline water figure was mask resolution, not spill.** The first pass
+sampled the polygon against the build's 2 km ocean grid and reported Brisbane 3.2% of
+the shape over water, Hobart 2.6%, Sydney 0.4%. Re-measured with a distance transform,
+asking how far each "wet" sample sits from the nearest land cell:
+
+| start    | over "ocean" | within 1 cell of land | more than 2 cells offshore | worst |
+|----------|--------------|-----------------------|----------------------------|-------|
+| Brisbane | 3.2%         | 66%                   | 11%                        | 6.4 km |
+| Hobart   | 2.6%         | 72%                   | 5%                         | 4.4 km |
+| Sydney   | 0.4%         | 100%                  | 0%                         | 2 km  |
+
+A 2 km grid cannot place a coastline to better than a cell, so anything inside one cell
+of land is the grid, not the shape. Sydney's spill is entirely that. **The genuinely
+offshore share is about 0.35% of the Brisbane shape and 0.13% of Hobart's**, not 3.2%
+and 2.6%.
+
+**What is real is the hull spanning a bay.** Brisbane's offshore samples cluster around
+-27.32, 153.13, which is Bramble Bay between Redcliffe and the northern suburbs: two
+reachable shores facing each other, with the generalised hull bridging the water between
+them. That is what `smoothing: 0` targets, and it is the only part of the original
+diagnosis that survived.
+
+The lesson for next time is the one already in `feedback_independent-verification`: the
+2 km mask came out of the same build as the peaks, and a figure quoted off it inherits
+its resolution. Ask what the instrument can resolve before quoting it to three
+significant figures.

@@ -35,7 +35,7 @@ const ALLOWED = new Set([
 const COORD_DP = 3;                       // ~110 m
 const MAX_SECONDS = 4 * 3600;
 // Bump whenever the upstream request body changes, to retire cached geometry.
-const SHAPE = "s0-noferry";
+const SHAPE = "s0";
 
 function cors(origin) {
   const allow = ALLOWED.has(origin) ? origin : "https://charlietrenorden.com";
@@ -94,7 +94,7 @@ export default {
 
     const rlat = lat.toFixed(COORD_DP), rlon = lon.toFixed(COORD_DP);
     // The key carries SHAPE, so changing the request below actually changes what comes
-    // back. Without it a smoothing or avoid_features change is invisible for a day:
+    // back. Without it a change to the request below is invisible for a day:
     // the edge keeps serving the geometry the old settings produced.
     const cacheKey = new Request(
       `https://woop-woop.invalid/iso/${SHAPE}/${body.mode}/${seconds}/${rlat}/${rlon}`,
@@ -115,39 +115,34 @@ export default {
       locations: [[Number(rlon), Number(rlat)]],
       range: [seconds],
       range_type: "time",
-      // Zero smoothing, because the polygon is now DRAWN as well as tested. Any
-      // generalisation is a bulge outwards from the road network, and outwards from a
-      // coastal road is the sea. Measured over the sea on a 2 km ocean mask, at the
-      // previous smoothing of 15: Brisbane 3.2% of the shape, Hobart 2.6%.
+      // Zero smoothing, because the polygon is now DRAWN as well as tested. Smoothing
+      // generalises the hull outwards from the road network, and where two reachable
+      // shores face each other it spans the gap between them - which is water.
+      //
+      // Measured on the Brisbane 60 min drive at the previous smoothing of 15: the
+      // shape crossed Bramble Bay, about 6 km offshore at the worst point, between
+      // Redcliffe and the northern suburbs. That is the visible artefact, and it is
+      // what this line targets.
+      //
+      // Ferries were NOT a cause, contrary to the first version of this comment.
+      // Tested every ferry-only island around Brisbane - Dunwich and Point Lookout on
+      // North Stradbroke, Russell, Macleay - and the isochrone contained none of them,
+      // so avoiding them bought nothing measurable. Not kept as insurance either: the
+      // page hands the user Google Maps DRIVING directions, and those DO route over
+      // ferries, so suppressing them here would make the reachable set disagree with
+      // the directions offered for reaching it.
       smoothing: 0,
-      options: {
-        // You cannot drive across water. A ferry in the network puts land that is
-        // genuinely unreachable inside the shape, and drags the hull over the bay to
-        // connect it - Brisbane to Stradbroke is the local case.
-        avoid_features: ["ferries"],
-      },
     };
 
-    const call = (b) => fetch(`${UPSTREAM}/${profile}`, {
+    const upstream = await fetch(`${UPSTREAM}/${profile}`, {
       method: "POST",
       headers: {
         "Authorization": env.ORS_KEY,
         "Content-Type": "application/json",
         "Accept": "application/geo+json",
       },
-      body: JSON.stringify(b),
+      body: JSON.stringify(ask),
     });
-
-    let upstream = await call(ask);
-    // avoid_features is documented per profile and the valid set differs between them.
-    // Rather than guess which profiles accept "ferries", ask, and on a rejection fall
-    // back to the plain request - a 400 here would otherwise break a whole mode and
-    // send it silently back to the circle estimate.
-    if (upstream.status === 400) {
-      const plain = { ...ask };
-      delete plain.options;
-      upstream = await call(plain);
-    }
 
     const text = await upstream.text();
     if (!upstream.ok) {
