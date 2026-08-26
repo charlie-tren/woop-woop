@@ -8,7 +8,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 
 NAME = "Woop Woop"
-TAGLINE = "The emptiest place you can get to."
+TAGLINE = "The emptiest place within reach."
 
 # Spanning registers deliberately: condensed grotesque, geometric, monospace,
 # editorial serif, display, humanist.
