@@ -32,7 +32,7 @@ const MODES = {
 };
 
 const state = {
-  mode: "car", mins: 60,
+  mode: "foot", mins: 60,
   origin: { lat: -27.4698, lon: 153.0251 },
   exact: true,           // use the real road-network isochrone
   iso: null,             // its rings, once fetched
@@ -260,8 +260,8 @@ function render() {
     // Leaflet wants [lat, lon]; GeoJSON is [lon, lat].
     layers.iso = L.polygon(
       state.iso.map((r) => r.map((p) => [p[1], p[0]])),
-      { color: "#e2674a", weight: 1.5, opacity: 0.9, fillOpacity: 0.07,
-        interactive: false }).addTo(map);
+      { color: "#e2674a", weight: 2, opacity: 1, fillOpacity: 0.22,
+        fillColor: "#c2451f", interactive: false }).addTo(map);
   }
   if (!a) {
     box.className = "empty";
@@ -309,9 +309,10 @@ function render() {
     radius: 7, color: "#fff", weight: 2, fillColor: "#e2674a", fillOpacity: 1,
   }).addTo(map).bindTooltip("Furthest from anything");
 
-  map.fitBounds(
-    L.latLngBounds([[a.lat, a.lon], [state.origin.lat, state.origin.lon]]).pad(0.35),
-    { animate: false });
+  const view = L.latLngBounds([[a.lat, a.lon],
+                               [state.origin.lat, state.origin.lon]]);
+  if (layers.iso) view.extend(layers.iso.getBounds());
+  map.fitBounds(view.pad(0.12), { animate: false });
 }
 
 /* Redraw immediately from the estimate, then fetch the real isochrone if asked.

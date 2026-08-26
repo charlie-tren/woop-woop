@@ -34,6 +34,8 @@ const ALLOWED = new Set([
 // what makes the cache actually hit: without it, every pixel of map is a fresh call.
 const COORD_DP = 3;                       // ~110 m
 const MAX_SECONDS = 4 * 3600;
+// Bump whenever the upstream request body changes, to retire cached geometry.
+const SHAPE = "s0-noferry";
 
 function cors(origin) {
   const allow = ALLOWED.has(origin) ? origin : "https://charlietrenorden.com";
@@ -91,8 +93,11 @@ export default {
     }
 
     const rlat = lat.toFixed(COORD_DP), rlon = lon.toFixed(COORD_DP);
+    // The key carries SHAPE, so changing the request below actually changes what comes
+    // back. Without it a smoothing or avoid_features change is invisible for a day:
+    // the edge keeps serving the geometry the old settings produced.
     const cacheKey = new Request(
-      `https://woop-woop.invalid/iso/${body.mode}/${seconds}/${rlat}/${rlon}`,
+      `https://woop-woop.invalid/iso/${SHAPE}/${body.mode}/${seconds}/${rlat}/${rlon}`,
       { method: "GET" });
     const cache = caches.default;
 
@@ -104,24 +109,45 @@ export default {
       return out;
     }
 
-    const upstream = await fetch(`${UPSTREAM}/${profile}`, {
+    // openrouteservice takes [lon, lat] - longitude FIRST. The reverse is the single
+    // most common way to get an isochrone for the wrong hemisphere.
+    const ask = {
+      locations: [[Number(rlon), Number(rlat)]],
+      range: [seconds],
+      range_type: "time",
+      // Zero smoothing, because the polygon is now DRAWN as well as tested. Any
+      // generalisation is a bulge outwards from the road network, and outwards from a
+      // coastal road is the sea. Measured over the sea on a 2 km ocean mask, at the
+      // previous smoothing of 15: Brisbane 3.2% of the shape, Hobart 2.6%.
+      smoothing: 0,
+      options: {
+        // You cannot drive across water. A ferry in the network puts land that is
+        // genuinely unreachable inside the shape, and drags the hull over the bay to
+        // connect it - Brisbane to Stradbroke is the local case.
+        avoid_features: ["ferries"],
+      },
+    };
+
+    const call = (b) => fetch(`${UPSTREAM}/${profile}`, {
       method: "POST",
       headers: {
         "Authorization": env.ORS_KEY,
         "Content-Type": "application/json",
         "Accept": "application/geo+json",
       },
-      body: JSON.stringify({
-        // openrouteservice takes [lon, lat] - longitude FIRST. The reverse is the
-        // single most common way to get an isochrone for the wrong hemisphere.
-        locations: [[Number(rlon), Number(rlat)]],
-        range: [seconds],
-        range_type: "time",
-        // The polygon is only ever used to test whether a point is inside it, so a
-        // smoother, smaller one is strictly better than a detailed one.
-        smoothing: 15,
-      }),
+      body: JSON.stringify(b),
     });
+
+    let upstream = await call(ask);
+    // avoid_features is documented per profile and the valid set differs between them.
+    // Rather than guess which profiles accept "ferries", ask, and on a rejection fall
+    // back to the plain request - a 400 here would otherwise break a whole mode and
+    // send it silently back to the circle estimate.
+    if (upstream.status === 400) {
+      const plain = { ...ask };
+      delete plain.options;
+      upstream = await call(plain);
+    }
 
     const text = await upstream.text();
     if (!upstream.ok) {

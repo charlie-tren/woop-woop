@@ -32,8 +32,8 @@ h1{margin:0; line-height:0}
 h1 img{height:30px; width:auto; display:block}
 @media (max-width:520px){ h1 img{height:24px} }
 header p{margin:0; color:var(--muted); font-size:13.5px}
+header .tag{position:relative; top:-5px}
 header a{color:var(--muted)}
-header a .back{color:var(--accent,#0b6b3a)}
 main{flex:1; display:flex; min-height:0}
 #map{flex:1; min-width:0; background:var(--bg)}
 aside{
@@ -79,7 +79,7 @@ a{color:var(--accent)}
 <body>
 <header>
   <h1><img src="logo.svg" alt="Woop Woop" width="359" height="74"></h1>
-  <p>The emptiest place you can get to.</p>
+  <p class="tag">The emptiest place you can get to.</p>
   <p style="margin-left:auto"><a href="https://charlietrenorden.com/"><span class="back">&larr;</span>&nbsp;Other projects</a></p>
 </header>
 
@@ -97,9 +97,9 @@ a{color:var(--accent)}
     <fieldset>
       <legend>Getting there</legend>
       <div class="modes" role="group" aria-label="Mode of transport">
-        <button data-mode="foot" aria-pressed="false">Walk</button>
+        <button data-mode="foot" aria-pressed="true">Walk</button>
         <button data-mode="bike" aria-pressed="false">Ride</button>
-        <button data-mode="car"  aria-pressed="true">Drive</button>
+        <button data-mode="car"  aria-pressed="false">Drive</button>
       </div>
     </fieldset>
 
@@ -118,11 +118,9 @@ a{color:var(--accent)}
     <div id="answer" class="empty">Working it out&hellip;</div>
 
     <p class="caveat">
-      <strong>Range follows the real road network, up to an hour.</strong> Beyond that
-      - or if the routing is unavailable - it falls back to a circle, which is a poor
-      substitute: measured against 84 real isochrones, no circle reproduces the right
-      answer more than about a third of the time. The emptiness measurement underneath
-      is exact either way, and covers all of Australia.
+      Range follows the real road network up to an hour. Beyond that, or if the
+      routing is unavailable, it falls back to a circle - a poor substitute. The
+      emptiness underneath is exact either way, across all of Australia.
     </p>
   </aside>
 </main>
