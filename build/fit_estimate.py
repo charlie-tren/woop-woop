@@ -21,7 +21,13 @@ KEY_FILE = "secrets/ors_key.txt"
 OUT = "data/isochrones.json"
 GAP_S = 3.5
 
-# The model in docs/app.js today.
+# The BASELINE the multiplier sweep is expressed against, not what the app ships.
+# It was app.js's model when this was written; the fit has since been run over 84
+# isochrones and app.js now carries the RESULT - 1.8, 7.3 and 22.0 km/h at detour
+# 1.0, chosen to under-promise. Do not "correct" these to match app.js: the reported
+# multiplier is relative to this baseline, and moving it silently rescales every
+# number the fit prints. The effective speed is always kmh * det * mult, which is
+# what to compare against app.js.
 GUESS = {"foot": (4.5, 0.80), "bike": (15.0, 0.75), "car": (70.0, 0.70)}
 # openrouteservice refuses anything longer, measured (error 3004).
 MAX_SECONDS = 3600
