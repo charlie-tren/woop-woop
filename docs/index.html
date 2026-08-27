@@ -30,9 +30,16 @@ header{
 }
 h1{margin:0; line-height:0}
 h1 img{height:30px; width:auto; display:block}
-@media (max-width:520px){ h1 img{height:24px} }
+@media (max-width:520px){
+  h1 img{height:24px}
+  /* Too narrow for wordmark + tagline + link on one row. The back-link keeps the
+     wordmark's row (house rule: top right) and the tagline takes the next one. */
+  header .home{order:2}
+  header .tag{order:3; width:100%; top:0}
+}
 header p{margin:0; color:var(--muted); font-size:13.5px}
 header .tag{position:relative; top:-5px}
+header .home{margin-left:auto}
 header a{color:var(--muted)}
 main{flex:1; display:flex; min-height:0}
 #map{flex:1; min-width:0; background:var(--bg)}
@@ -79,7 +86,7 @@ a{color:var(--accent)}
 <header>
   <h1><img src="logo.svg" alt="Woop Woop" width="359" height="74"></h1>
   <p class="tag">The emptiest place within reach.</p>
-  <p style="margin-left:auto"><a href="https://charlietrenorden.com/"><span class="back">&larr;</span>&nbsp;Other projects</a></p>
+  <p class="home"><a href="https://charlietrenorden.com/"><span class="back">&larr;</span>&nbsp;Other projects</a></p>
 </header>
 
 <main>
