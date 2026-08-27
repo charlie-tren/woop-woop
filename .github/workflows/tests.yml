@@ -1,0 +1,27 @@
+name: Tests
+
+# Woop Woop picks the emptiest point you can reach, and a wrong point looks exactly
+# like a right one: no error, no crash, and nothing anyone can check by eye. It had
+# 2,238 lines and no tests at all.
+#
+# Scoped to the numpy/scipy functions that DECIDE the answer. extract.py and
+# check_water.py want osmium and shapely and signs.py wants playwright, which is a
+# different order of install; those stay uncovered for now and the gap is recorded in
+# the hub backlog rather than papered over with a partial install here.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install pytest numpy scipy
+      - run: python -m pytest tests -q
