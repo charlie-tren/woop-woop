@@ -29,7 +29,7 @@ for attr in ("Point", "shape"):
 sys.modules["shapely.strtree"].STRtree = object
 
 from extract import want, CIVILISATION, ACCESS_ONLY      # noqa: E402
-from check_water import STRICT, MARSH                    # noqa: E402
+from check_water import classify, STRICT, MARSH          # noqa: E402
 
 
 # ------------------------------------------------- civilisation vs access
@@ -120,3 +120,28 @@ def test_strict_and_marsh_stay_separate():
     """Reporting them together would blame the build for a definition it never made:
     the build does not exclude wetland, and a claypan is walkable."""
     assert not (STRICT & MARSH)
+
+
+# ---------------------------------------------------------------- classify
+# classify() takes an ITERABLE OF PAIRS, not a mapping - it is handed osmium's tag list
+# directly. Passing it a dict would silently iterate the keys and match nothing, so the
+# shape is part of what these pin.
+
+@pytest.mark.parametrize("tags,expected", [
+    ([("natural", "water")], "strict"),
+    ([("landuse", "reservoir")], "strict"),
+    ([("waterway", "riverbank")], "strict"),
+    ([("natural", "wetland")], "marsh"),
+    ([("highway", "track")], None),
+    ([], None),
+    ([("name", "Lake Eyre")], None),           # a name is not a claim about water
+    ([("natural", "water"), ("name", "X")], "strict"),
+])
+def test_classify_reads_pairs_and_splits_open_water_from_marsh(tags, expected):
+    assert classify(tags) == expected
+
+
+def test_strict_wins_over_marsh_when_both_are_present():
+    """A wetland tagged as water too is open water: the stricter reading is the one that
+    keeps someone out of a lake."""
+    assert classify([("natural", "wetland"), ("landuse", "reservoir")]) == "strict"
