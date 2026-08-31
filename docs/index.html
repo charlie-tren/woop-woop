@@ -63,6 +63,7 @@ aside{
 fieldset{border:0; padding:0; margin:0 0 18px}
 legend{font-size:12px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); padding:0 0 8px}
 .modes{display:flex; gap:6px}
+.check.walkleg{margin-top:10px}
 .modes button{
   flex:1; padding:8px 4px; border:1px solid var(--line); background:transparent;
   color:var(--ink); border-radius:7px; cursor:pointer; font:inherit; font-size:13.5px;
@@ -84,9 +85,13 @@ input[type=range]{width:100%; accent-color:var(--accent)}
 a{color:var(--accent)}
 .check{display:flex; gap:9px; align-items:center; cursor:pointer; font-size:14px}
 .check input{accent-color:var(--accent); width:16px; height:16px; cursor:pointer}
+.check input:disabled{cursor:default; opacity:.45}
+.check:has(input:disabled){color:var(--muted)}
 .leg a{color:var(--accent)}
 .check{display:flex; gap:9px; align-items:center; cursor:pointer; font-size:14px}
 .check input{accent-color:var(--accent); width:16px; height:16px; cursor:pointer}
+.check input:disabled{cursor:default; opacity:.45}
+.check:has(input:disabled){color:var(--muted)}
 </style>
 <!-- Cloudflare Web Analytics - same estate-wide token as the hub root. See index.html. -->
 <script>/* Analytics, gated. Two kinds of visitor are not an audience and never load it: anyone who has opted out with ?nostats=1, and automation, since navigator.webdriver is the one signal true for Playwright, Puppeteer and Selenium alike. Inline and dependency-free on purpose - served from the Worker, a bad deploy there would stop analytics on every site. See site-stats/beacon. */(function(){try{var X="ct.nostats",C="ct_nostats",D=";path=/;domain=.charlietrenorden.com",q=location.search,out=false;if(q.indexOf("nostats=1")>-1){try{localStorage.setItem(X,"1")}catch(e){}document.cookie=C+"=1"+D+";max-age=63072000;samesite=lax";}if(q.indexOf("nostats=0")>-1){try{localStorage.removeItem(X)}catch(e){}document.cookie=C+"="+D+";max-age=0";}try{out=!!localStorage.getItem(X)}catch(e){}if(!out)out=document.cookie.indexOf(C+"=1")>-1;if(out||navigator.webdriver)return;var d=document,s;s=d.createElement("script");s.defer=true;s.src="https://static.cloudflareinsights.com/beacon.min.js";s.setAttribute("data-cf-beacon",'{"token": "32b821209b5441a08df42ccf61c9e6c2"}');d.head.appendChild(s);s=d.createElement("script");s.defer=true;s.src="https://beacon.charlietrenorden.com/b.js";d.head.appendChild(s);}catch(e){}})();</script>
@@ -116,6 +121,8 @@ a{color:var(--accent)}
         <button data-mode="bike" aria-pressed="false">Ride</button>
         <button data-mode="car"  aria-pressed="false">Drive</button>
       </div>
+      <label class="check walkleg"><input type="checkbox" id="walkleg" checked>
+        Walk the last stretch</label>
     </fieldset>
 
     <fieldset>

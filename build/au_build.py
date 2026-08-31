@@ -11,7 +11,7 @@ import numpy as np
 from scipy import ndimage
 sys.path.insert(0, "build")
 from au import WORK, AUS, BUFFER, CELL, COARSE, read_chunk
-from raster import Grid, burn, ANYTHING, ACCESS
+from raster import Grid, burn, ANYTHING, ACCESS, BUILT
 
 # ON the path network, not near it. A spot 140 m into scrub is not somewhere Google
 # Maps can navigate you to, and "walk to the coordinates and then bush-bash" is not an
@@ -27,6 +27,46 @@ SPACING_M = 1000
 MIN_DIST_M = 0
 DIST_SCALE_M = 10    # units the packed distances are stored in
 PEAK_DIR = f"{WORK}/peaks"
+DRIVE_DIR = f"{WORK}/drive"
+LAND_DIR = f"{WORK}/land"
+
+# Drive-only peaks sit on the ROAD network, which is far denser than the set of remote
+# track-ends the main field finds - Australia carries roughly 900,000 km of road, so a
+# kilometre of suppression would mine close to a million of them. 2 km halves that and
+# the merge prunes harder still.
+DRIVE_SPACING_M = 2000
+
+# The continental land mask shipped for clipping the drawn isochrone. 1 km, because
+# Sydney Harbour is one to three kilometres wide and the 4 km component grid already
+# shipped cannot resolve it at all - masking with that would eat real land.
+LAND_CELL = 1000.0
+
+
+def land_patch(g, wet, box, gg):
+    """The chunk's own box, resampled from its 100 m water mask onto the 1 km grid.
+
+    Sampled 3x3 within each coarse cell and called land only if every sample is land,
+    so the reduction loses NARROW LAND rather than narrow water. That is the safe
+    direction for the job: the mask exists to stop a fill being painted over a harbour,
+    and leaving a sliver of foreshore unshaded is a far smaller lie than shading the
+    harbour.
+    """
+    x0, y0 = gg.to_px(box[1], box[2])
+    x1, y1 = gg.to_px(box[3], box[0])
+    gx0, gy0 = max(0, int(np.floor(x0))), max(0, int(np.floor(y0)))
+    gx1, gy1 = min(gg.w, int(np.ceil(x1))), min(gg.h, int(np.ceil(y1)))
+    if gx1 <= gx0 or gy1 <= gy0:
+        return None
+    ys, xs = np.mgrid[gy0:gy1, gx0:gx1]
+    land = np.ones(xs.shape, bool)
+    for fy in (0.17, 0.5, 0.83):
+        for fx in (0.17, 0.5, 0.83):
+            lon, lat = gg.to_lonlat(xs + fx, ys + fy)
+            cx, cy = g.to_px(lon, lat)
+            cx = np.clip(cx.astype(np.int64), 0, g.w - 1)
+            cy = np.clip(cy.astype(np.int64), 0, g.h - 1)
+            land &= ~wet[cy, cx]
+    return gx0, gy0, land
 
 
 # ------------------------------------------------------------------ stage: coarse
@@ -92,7 +132,7 @@ def coarse():
 
 
 # ------------------------------------------------------------------ stage: chunks
-def one_chunk(i, box, coarse_ocean, coarse_comp, cg):
+def one_chunk(i, box, coarse_ocean, coarse_comp, cg, gg):
     d = read_chunk(f"{WORK}/c{i:03d}.bin")
     if d is None:
         return 0
@@ -146,6 +186,52 @@ def one_chunk(i, box, coarse_ocean, coarse_comp, cg):
     x1, y1 = g.to_px(box[3], box[0])
     own[max(0, int(np.ceil(y0))):int(y1), max(0, int(np.ceil(x0))):int(x1)] = True
 
+    # ---- the continental land mask, for clipping the drawn isochrone ----
+    lp = land_patch(g, wet, box, gg)
+    if lp is not None:
+        os.makedirs(LAND_DIR, exist_ok=True)
+        np.savez_compressed(f"{LAND_DIR}/l{i:03d}.npz",
+                            x0=lp[0], y0=lp[1], land=lp[2])
+
+    # ---- drive-only peaks: the emptiest place you can PARK ----
+    #
+    # A different field, not a filter on the same one. The road underfoot is excluded
+    # from the measurement (BUILT drops "road"), so the number means "how far from the
+    # nearest house, railway, power line or runway", and the answer is somewhere you can
+    # actually stop a car. The access point IS the spot, so the walked leg is zero.
+    road = burn(g, lon, lat, off, kind == "road")
+    built = burn(g, lon, lat, off, np.isin(kind, list(BUILT)))
+    if road.any() and built.any():
+        dpark = ndimage.distance_transform_edt(~built,
+                                               sampling=CELL).astype(np.float32)
+        okd = own & (~wet) & road
+        if okd.any():
+            kd = int(round(DRIVE_SPACING_M / CELL)) | 1
+            fd = np.where(okd, dpark, -1)
+            candd = okd & (fd >= ndimage.maximum_filter(fd, size=kd,
+                                                        mode="constant", cval=-1))
+            yd, xd = np.nonzero(candd)
+            yd, xd = (lambda o: (yd[o], xd[o]))(np.argsort(-dpark[yd, xd]))
+            stepd = max(1, int(round(DRIVE_SPACING_M / CELL)))
+            takend = np.zeros((g.h // stepd + 2, g.w // stepd + 2), bool)
+            drows = []
+            for y, x in zip(yd, xd):
+                gy, gx = y // stepd, x // stepd
+                if takend[gy, gx]:
+                    continue
+                takend[gy, gx] = True
+                plon, plat = g.to_lonlat(x + 0.5, y + 0.5)
+                ccx = int(np.clip((plon - cg.west) * cg.m_per_deg_lon / cg.cell,
+                                  0, cg.w - 1))
+                ccy = int(np.clip((cg.north - plat) * cg.m_per_deg_lat / cg.cell,
+                                  0, cg.h - 1))
+                drows.append((plat, plon, float(dpark[y, x]), 0.0,
+                              plat, plon, int(coarse_comp[ccy, ccx])))
+            if drows:
+                os.makedirs(DRIVE_DIR, exist_ok=True)
+                np.save(f"{DRIVE_DIR}/q{i:03d}.npy",
+                        np.array(drows, dtype=np.float64))
+
     ok = own & (~wet) & (reach <= 0.0) & (dist >= MIN_DIST_M)
     if not ok.any():
         return 0
@@ -186,11 +272,13 @@ def chunks_stage():
     cg = Grid(tuple(c["bbox"]), float(c["cell"]))
     ocean = ndimage.binary_erosion(c["ocean"], iterations=2)
     comp = c["comp"]
+    gg = Grid(AUS, LAND_CELL)
+    print(f"land mask grid {gg.w} x {gg.h} at {LAND_CELL:.0f} m")
     total, t0 = 0, time.time()
     for i, box in enumerate(cfg["boxes"]):
         if os.path.exists(f"{PEAK_DIR}/p{i:03d}.npy"):
             continue
-        n = one_chunk(i, box, ocean, comp, cg)
+        n = one_chunk(i, box, ocean, comp, cg, gg)
         total += n
         print(f"  chunk {i:3d} {str(box):32} {n:6d} peaks  "
               f"({time.time()-t0:.0f}s)", flush=True)
@@ -259,6 +347,9 @@ def merge(out="docs/data/peaks.json"):
     small = remap[comp][::2, ::2]     # 4 km is ample to answer "which landmass"
     open(out.replace(".json", "-comp.bin"), "wb").write(small.tobytes())
 
+    land_meta = merge_land(out)
+    drive_meta = merge_drive(out, comp, remap, cg, sizes)
+
     n = len(a)
     blob = b"".join([
         np.rint(a[:, 0] * 1e5).astype("<i4").tobytes(),
@@ -285,9 +376,85 @@ def merge(out="docs/data/peaks.json"):
                  "south": s_, "west": w_, "north": n_, "east": e_,
                  "bytes": 1},
         "max_m": float(a[0, 2]), "area": "Australia",
+        "land": land_meta, "drive": drive_meta,
     }, open(out, "w"), indent=1)
     for f in (out, out.replace(".json", ".bin"), out.replace(".json", "-comp.bin")):
         print(f"  -> {f}  {os.path.getsize(f)/1024:,.0f} KB")
+
+
+def merge_land(out):
+    """Assemble the per-chunk land patches into one 1 km mask, shipped as a 1-bit PNG.
+
+    PNG rather than a raw bitmap because a land mask is enormous flat regions and
+    deflate eats it; the browser decodes it with the image decoder it already has and
+    reads the pixels off a canvas. Raw it is 2 MB.
+    """
+    from PIL import Image
+    gg = Grid(AUS, LAND_CELL)
+    land = np.zeros((gg.h, gg.w), bool)
+    seen = 0
+    for f in sorted(os.listdir(LAND_DIR)) if os.path.isdir(LAND_DIR) else []:
+        d = np.load(f"{LAND_DIR}/{f}")
+        x0, y0, patch = int(d["x0"]), int(d["y0"]), d["land"]
+        land[y0:y0 + patch.shape[0], x0:x0 + patch.shape[1]] |= patch
+        seen += 1
+    path = out.replace("peaks.json", "land.png")
+    Image.fromarray((land * 255).astype(np.uint8), "L").convert("1").save(
+        path, optimize=True)
+    pct = 100.0 * land.sum() / land.size
+    print(f"  land mask {gg.w} x {gg.h} from {seen} patches, {pct:.1f}% land "
+          f"-> {path}  {os.path.getsize(path)/1024:,.0f} KB")
+    s_, w_, n_, e_ = AUS
+    return {"width": gg.w, "height": gg.h, "south": s_, "west": w_,
+            "north": n_, "east": e_, "cell_m": LAND_CELL, "file": "land.png"}
+
+
+def merge_drive(out, comp, remap, cg, sizes):
+    """Pack the drive-only peaks - the emptiest place you can park."""
+    if not os.path.isdir(DRIVE_DIR):
+        print("  no drive peaks mined")
+        return None
+    rows = [np.load(f"{DRIVE_DIR}/{f}") for f in sorted(os.listdir(DRIVE_DIR))]
+    a = np.concatenate(rows)
+    print(f"  {len(a):,} raw drive peaks")
+
+    # Same two-tier prune as the main set, and for the same reason: without the thinned
+    # tail a drive from the middle of a city has no answer at all. The road network is
+    # far denser than the track-ends the main field finds, so both numbers are looser.
+    KEEP_ALL_ABOVE, SPACING_DEG = 2000.0, 5.0 / 111.0
+    strong = a[a[:, 2] >= KEEP_ALL_ABOVE]
+    weak = a[a[:, 2] < KEEP_ALL_ABOVE]
+    weak = weak[np.argsort(-weak[:, 2])]
+    key = (np.floor(weak[:, 0] / SPACING_DEG).astype(np.int64) * 1_000_000
+           + np.floor(weak[:, 1] / SPACING_DEG).astype(np.int64))
+    _, first = np.unique(key, return_index=True)
+    a = np.concatenate([strong, weak[np.sort(first)]])
+    a = a[np.argsort(-a[:, 2])]
+    print(f"  {len(strong):,} at or above {KEEP_ALL_ABOVE:.0f} m, "
+          f"{len(first):,} thinned below it -> {len(a):,} shipped")
+    print(f"  best park {a[0,2]/1000:.1f} km at {a[0,0]:.4f}, {a[0,1]:.4f}")
+
+    px = np.clip(((a[:, 1] - cg.west) * cg.m_per_deg_lon / cg.cell).astype(int),
+                 0, cg.w - 1)
+    py = np.clip(((cg.north - a[:, 0]) * cg.m_per_deg_lat / cg.cell).astype(int),
+                 0, cg.h - 1)
+    cid = remap[np.clip(comp[py, px], 0, sizes.size - 1)]
+
+    blob = b"".join([
+        np.rint(a[:, 0] * 1e5).astype("<i4").tobytes(),
+        np.rint(a[:, 1] * 1e5).astype("<i4").tobytes(),
+        np.rint(np.clip(a[:, 2] / DIST_SCALE_M, 0, 65535)).astype("<u2").tobytes(),
+        np.zeros(len(a), dtype="<u2").tobytes(),
+        np.rint(a[:, 0] * 1e5).astype("<i4").tobytes(),   # access point IS the spot
+        np.rint(a[:, 1] * 1e5).astype("<i4").tobytes(),
+        cid.astype("<u2").tobytes(),
+    ])
+    path = out.replace("peaks.json", "peaks-drive.bin")
+    open(path, "wb").write(blob)
+    print(f"  -> {path}  {os.path.getsize(path)/1024:,.0f} KB")
+    return {"count": int(len(a)), "max_m": float(a[0, 2]),
+            "file": "peaks-drive.bin",
+            "measured_to": sorted(BUILT), "on": "road"}
 
 
 if __name__ == "__main__":

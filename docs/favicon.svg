@@ -1,10 +1,12 @@
-<!-- Furthest: one road along the edge, one dot as far from it as the tile allows.
-     The whole idea in two marks. Chosen over a map pin (reads as "location" in every
-     UI on earth) and over concentric rings (reads as "find me"). At 16px the line
-     survives as an edge and the dot as a dot, which is the minimum this needs. -->
+<!-- The wordmark's own object, at tab size: an Australian green distance sign with an
+     arrow on it. The mark and the favicon are now one idea, which they were not - the
+     old icon was a grey road with a rust dot, and at 16px the road vanished entirely
+     and left an anonymous orange dot sharing nothing with the logo above it.
+     Regenerate the raster files with build/icons.py; chosen from build/favicon_options.py. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="7" fill="#171c24"/>
-  <path d="M3 25.5 Q10 27 16 24.5 T29 22" fill="none" stroke="#5b6673"
-        stroke-width="2.4" stroke-linecap="round"/>
-  <circle cx="12.5" cy="10" r="3.6" fill="#e2674a"/>
+  <rect width="32" height="32" rx="7" fill="#0b6b3a"/>
+  <rect x="2.5" y="2.5" width="27" height="27" rx="4" fill="none"
+        stroke="#ffffff" stroke-width="2"/>
+  <path d="M9 16h12m-4.5-5 5 5-5 5" fill="none" stroke="#ffffff"
+        stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

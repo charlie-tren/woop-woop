@@ -33,7 +33,7 @@ def main():
     out[48].save(SITE / "favicon-48.png")
     out[180].save(SITE / "apple-touch-icon.png")
     # apple-touch-icon must not be transparent - iOS renders alpha as BLACK.
-    flat = Image.new("RGB", out[180].size, "#171c24")
+    flat = Image.new("RGB", out[180].size, "#0b6b3a")
     flat.paste(out[180], mask=out[180].split()[-1])
     flat.save(SITE / "apple-touch-icon.png")
     out[48].save(SITE / "favicon.ico",

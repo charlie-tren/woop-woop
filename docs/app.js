@@ -36,13 +36,30 @@ const MODES = {
 // calibration, so the walk-in leg is costed at that rather than at the mode's speed.
 const WALK_KMH = 5.0;
 
-// Only WALKING can be routed to the answer itself. A peak sits on a track, path or
-// footway by construction (au_build.py keeps reach == 0), and driving-car will not
-// route down a footway - so for the wheeled modes the polygon has to be tested against
-// the ACCESS point, which is the nearest built ground, and the remaining d metres are
-// walked. Testing the spot instead is what made a 60 minute drive take well over an
-// hour: the walk was never in the budget at all.
-const WALKS_TO_SPOT = { foot: true, bike: false, car: false };
+/* Whether the vehicle reaches the answer itself, or stops short of it.
+ *
+ * Walking always reaches it: a peak sits on a track, path or footway by construction.
+ * Driving never does - driving-car will not route down a footway - so the polygon has
+ * to be tested against the ACCESS point and the remaining metres walked. Testing the
+ * spot instead is what made a 60 minute drive take well over an hour.
+ *
+ * Unless the walk is switched off, in which case the whole question changes and so does
+ * the peak file: see activeSet(). */
+function walksToSpot() {
+  return state.mode === "foot" || (!state.walkLeg && !!PD);
+}
+
+/* Which peak file answers the current question.
+ *
+ * These are not the same measurement. The main file maximises distance from ANYTHING,
+ * roads included, so its answers sit at the end of fire trails and footpaths. A point
+ * on a road is 0 m from anything by that definition, so it can never answer "where can
+ * I drive to" - which is why the drive-only file maximises a different field, with the
+ * road excluded from the measurement but required underfoot. The headline changes
+ * wording with the file, because it is a different claim. */
+function activeSet() {
+  return state.mode !== "foot" && !state.walkLeg && PD ? PD : P;
+}
 
 // Per-PROFILE ceilings, not one global number. Measured against the live Worker on
 // 31/08/2026: foot and bike both return 200 at 120 and 240 minutes, car is refused
@@ -57,6 +74,7 @@ const state = {
   // Sydney, not Brisbane. Changed 31/08/2026 - the homepage card is a picture of
   // whatever this opens on, and the site is written from Sydney.
   origin: { lat: -33.8688, lon: 151.2093 },
+  walkLeg: true,         // willing to walk the last stretch off the road network
   bands: null,           // [{mins, rings}] innermost first, once fetched
   isoNote: "",           // why the real network is not being used, if it is not
   busy: false,
@@ -168,26 +186,147 @@ function ringBounds(ring) {
   }
   return { s: s, w: w, n: n, e: e };
 }
-let meta, P, comp, map, layers = {};
+let meta, P, PD, comp, map, layers = {};
+
+/* ---------- the land mask ---------- */
+/* One bit per square kilometre of the continent, shipped as a 1-bit PNG.
+ *
+ * It exists because the isochrone is a generalised hull: where two reachable shores
+ * face each other it spans the water between them, and the fill was being painted over
+ * Sydney Harbour. The component grid already shipped is 4 km, which cannot resolve a
+ * harbour one to three kilometres wide - masking with that would eat real foreshore.
+ *
+ * Kept BIT-PACKED. Decoded off a canvas once and then thrown away: the continent is
+ * 16.6M cells, which is 2.1 MB of bits and 66 MB of RGBA.
+ */
+let landBits = null, landG = null;
+
+async function loadLand() {
+  if (!meta.land) return;
+  const g = Object.assign({}, meta.land);
+  // Reproduce the build's own projection rather than normalising by the bbox: Grid
+  // rounds its width UP to a whole cell, so dividing by the span drifts by a fraction
+  // of a cell across the continent.
+  const mLat = (Math.PI * 6371000) / 180;
+  g.mLon = mLat * Math.cos((((g.south + g.north) / 2) * Math.PI) / 180);
+  g.mLat = mLat;
+  landG = g;
+
+  const img = new Image();
+  img.src = DATA + g.file;
+  await img.decode();
+  const c = document.createElement("canvas");
+  c.width = g.width; c.height = g.height;
+  const cx = c.getContext("2d", { willReadFrequently: true });
+  cx.drawImage(img, 0, 0);
+  const px = cx.getImageData(0, 0, g.width, g.height).data;
+  const n = g.width * g.height;
+  const bits = new Uint8Array((n + 7) >> 3);
+  for (let i = 0; i < n; i++) {
+    if (px[i * 4] > 127) bits[i >> 3] |= 1 << (i & 7);
+  }
+  landBits = bits;
+  c.width = c.height = 0;
+}
+
+function landAt(lat, lon) {
+  const g = landG;
+  if (!landBits || !g) return true;
+  const x = Math.floor(((lon - g.west) * g.mLon) / g.cell_m);
+  const y = Math.floor(((g.north - lat) * g.mLat) / g.cell_m);
+  if (x < 0 || y < 0 || x >= g.width || y >= g.height) return false;
+  const i = y * g.width + x;
+  return !!((landBits[i >> 3] >> (i & 7)) & 1);
+}
+
+/* The fill, as an image: land inside the isochrone, nothing outside it and nothing on
+ * the water. Painted into an offscreen canvas and clipped by the polygon path, because
+ * putImageData ignores a clip region and drawImage honours it. Handed to Leaflet as an
+ * overlay so panning and zooming stay its problem rather than ours. */
+const FILL_MAX_PX = 1600;
+let fillURL = null;
+
+function paintLandFill(rings, done) {
+  const bb = ringBounds(rings[0]);
+  const spanLon = bb.e - bb.w, spanLat = bb.n - bb.s;
+  if (spanLon <= 0 || spanLat <= 0) return done(null);
+  const aspect = (spanLon * landG.mLon) / (spanLat * landG.mLat);
+  let W = FILL_MAX_PX, H = Math.round(FILL_MAX_PX / aspect);
+  if (H > FILL_MAX_PX) { H = FILL_MAX_PX; W = Math.round(FILL_MAX_PX * aspect); }
+  W = Math.max(2, W); H = Math.max(2, H);
+
+  // Land, as pixels. No polygon test in here - that is what the clip is for.
+  const off = document.createElement("canvas");
+  off.width = W; off.height = H;
+  const octx = off.getContext("2d");
+  const id = octx.createImageData(W, H);
+  const d = id.data;
+  for (let py = 0; py < H; py++) {
+    const lat = bb.n - ((py + 0.5) / H) * spanLat;
+    for (let px2 = 0; px2 < W; px2++) {
+      const lon = bb.w + ((px2 + 0.5) / W) * spanLon;
+      if (landAt(lat, lon)) {
+        const o = (py * W + px2) * 4;
+        d[o] = 0xc2; d[o + 1] = 0x45; d[o + 2] = 0x1f; d[o + 3] = 0x59;
+      }
+    }
+  }
+  octx.putImageData(id, 0, 0);
+
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+  ctx.beginPath();
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length; i++) {
+      const x = ((ring[i][0] - bb.w) / spanLon) * W;
+      const y = ((bb.n - ring[i][1]) / spanLat) * H;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+  }
+  ctx.clip("evenodd");
+  ctx.drawImage(off, 0, 0);
+  off.width = off.height = 0;
+
+  c.toBlob((blob) => {
+    if (fillURL) URL.revokeObjectURL(fillURL);
+    fillURL = blob ? URL.createObjectURL(blob) : null;
+    done(fillURL && L.latLngBounds([[bb.s, bb.w], [bb.n, bb.e]]));
+  });
+}
 
 const $ = (s) => document.querySelector(s);
 const fmtKm = (m) => (m < 950 ? Math.round(m) + " m" : (m / 1000).toFixed(1) + " km");
 
-async function load() {
-  meta = await (await fetch(DATA + "peaks.json")).json();
-  const buf = await (await fetch(DATA + "peaks.bin")).arrayBuffer();
-  const n = meta.count;
+/* Structure of arrays, in the order the build wrote them. Both peak files share this
+ * layout, so one reader serves both. */
+function readPeaks(buf, n) {
   let o = 0;
   const take = (Type, count) => {
     const a = new Type(buf, o, count); o += count * Type.BYTES_PER_ELEMENT; return a;
   };
-  // Structure of arrays, in the order the build wrote them.
   const lat = take(Int32Array, n), lon = take(Int32Array, n);
   const d = take(Uint16Array, n), off = take(Uint16Array, n);
   const alat = take(Int32Array, n), alon = take(Int32Array, n);
   const c = take(Uint16Array, n);
-  P = { n: n, s: meta.coord_scale, ds: meta.dist_scale_m || 1,
-        lat: lat, lon: lon, d: d, off: off, alat: alat, alon: alon, c: c };
+  return { n: n, s: meta.coord_scale, ds: meta.dist_scale_m || 1,
+           lat: lat, lon: lon, d: d, off: off, alat: alat, alon: alon, c: c };
+}
+
+async function load() {
+  meta = await (await fetch(DATA + "peaks.json")).json();
+  P = readPeaks(await (await fetch(DATA + "peaks.bin")).arrayBuffer(), meta.count);
+
+  // The drive-only file and the land mask are both additions; an older deploy of the
+  // data has neither, and the page has to work without them rather than throw.
+  if (meta.drive && meta.drive.count) {
+    try {
+      PD = readPeaks(await (await fetch(DATA + meta.drive.file)).arrayBuffer(),
+                     meta.drive.count);
+    } catch (e) { PD = null; }
+  }
+  try { await loadLand(); } catch (e) { landBits = null; }
 
   // One byte per cell unless the manifest says otherwise. The component ids are
   // renumbered by landmass size at build time, so a byte covers every landmass anyone
@@ -249,14 +388,15 @@ function solve() {
   if (!want) return null;
 
   const bands = state.bands;
-  const toSpot = WALKS_TO_SPOT[state.mode];
+  const toSpot = walksToSpot();
+  const Q = activeSet();
 
   let nearest = null, nearestM = Infinity;
-  for (let i = 0; i < P.n; i++) {
-    if (P.c[i] !== want) continue;
-    const lat = P.lat[i] / P.s, lon = P.lon[i] / P.s;
-    const alat = P.alat[i] / P.s, alon = P.alon[i] / P.s;
-    const distM = P.d[i] * P.ds;
+  for (let i = 0; i < Q.n; i++) {
+    if (Q.c[i] !== want) continue;
+    const lat = Q.lat[i] / Q.s, lon = Q.lon[i] / Q.s;
+    const alat = Q.alat[i] / Q.s, alon = Q.alon[i] / Q.s;
+    const distM = Q.d[i] * Q.ds;
     const dx = (lon - state.origin.lon) * mPerDegLon;
     const dy = (lat - state.origin.lat) * mPerDegLat;
     const away = Math.sqrt(dx * dx + dy * dy);
@@ -282,7 +422,7 @@ function solve() {
     }
 
     const hit = {
-      lat: lat, lon: lon, dist_m: distM, offtrack_m: P.off[i] * P.ds,
+      lat: lat, lon: lon, dist_m: distM, offtrack_m: Q.off[i] * Q.ds,
       awayM: away, walkMins: walkMins, travelMins: travelMins,
       exact: !!bands, overBudget: false, access: { lat: alat, lon: alon },
     };
@@ -313,17 +453,32 @@ function render() {
   $("#origin-ll").textContent =
     state.origin.lat.toFixed(3) + ", " + state.origin.lon.toFixed(3);
 
-  for (const k of ["target", "iso", "leg"]) {
+  for (const k of ["target", "iso", "leg", "fill"]) {
     if (layers[k]) { map.removeLayer(layers[k]); layers[k] = null; }
   }
   // The outermost band IS the reachable set; the inner ones are only there to time
   // the trip, and drawing them would read as a heat map of nothing.
+  //
+  // Outline from the polygon, fill from a land-clipped image. The hull spans water
+  // wherever two reachable shores face each other, and a shaded harbour reads as
+  // somewhere you can go. The boundary still crosses it, because that is what the
+  // isochrone actually claims.
   if (state.bands && state.bands.length) {
     const outer = state.bands[state.bands.length - 1];
-    layers.iso = L.polygon(
-      outer.rings.map((r) => r.map((p) => [p[1], p[0]])),
-      { color: "#e2674a", weight: 2, opacity: 1, fillOpacity: 0.22,
-        fillColor: "#c2451f", interactive: false }).addTo(map);
+    const latlngs = outer.rings.map((r) => r.map((p) => [p[1], p[0]]));
+    layers.iso = L.polygon(latlngs,
+      { color: "#e2674a", weight: 2, opacity: 1,
+        fill: !landBits, fillOpacity: 0.22, fillColor: "#c2451f",
+        interactive: false }).addTo(map);
+    if (landBits) {
+      const seq = ++fillSeq;
+      paintLandFill(outer.rings, (bounds) => {
+        if (seq !== fillSeq || !bounds || !fillURL) return;
+        if (layers.fill) map.removeLayer(layers.fill);
+        layers.fill = L.imageOverlay(fillURL, bounds,
+          { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
+      });
+    }
   }
   if (!a) {
     box.className = "empty";
@@ -333,7 +488,7 @@ function render() {
   }
 
   const m = MODES[state.mode];
-  const wfrom = WALKS_TO_SPOT[state.mode] ? state.origin : a.access;
+  const wfrom = walksToSpot() ? state.origin : a.access;
   const gwalk = "https://www.google.com/maps/dir/?api=1&travelmode=walking&origin=" +
     wfrom.lat.toFixed(5) + "," + wfrom.lon.toFixed(5) +
     "&destination=" + a.lat.toFixed(5) + "," + a.lon.toFixed(5);
@@ -354,7 +509,7 @@ function render() {
   // The trip, leg by leg. Walking routes to the spot itself; the wheeled modes stop
   // at the last built ground, and the rest is on foot whatever you came in.
   const legs = [];
-  if (WALKS_TO_SPOT[state.mode]) {
+  if (walksToSpot()) {
     legs.push("<li>" + (a.travelMins === null
       ? "Walk to <b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b>."
       : "Walk there in under <b>" + fmtMins(a.travelMins) + "</b>.") + "</li>");
@@ -370,11 +525,13 @@ function render() {
   }
 
   box.innerHTML = note + over +
-    '<div class="big">' + fmtKm(a.dist_m) + " <span>from anything</span></div>" +
+    '<div class="big">' + fmtKm(a.dist_m) + " <span>" +
+      (activeSet() === PD ? "from anything but roads" : "from anything") +
+      "</span></div>" +
     '<ul class="leg">' +
     "<li><b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b></li>" +
     legs.join("") +
-    (WALKS_TO_SPOT[state.mode]
+    (walksToSpot()
       ? '<li><a target="_blank" rel="noopener" href="' + gwalk + '">Directions</a></li>'
       : '<li><a target="_blank" rel="noopener" href="' + gmaps + '">Directions to the '
         + 'drop-off</a> &middot; <a target="_blank" rel="noopener" href="' + gwalk
@@ -387,7 +544,7 @@ function render() {
 
   // The walked leg, drawn, so the part of the trip that is not on the road network is
   // visible rather than only stated.
-  if (!WALKS_TO_SPOT[state.mode]) {
+  if (!walksToSpot()) {
     layers.leg = L.polyline([[a.access.lat, a.access.lon], [a.lat, a.lon]],
       { color: "#e2674a", weight: 2, dashArray: "4 4", opacity: 0.9,
         interactive: false }).addTo(map);
@@ -409,7 +566,7 @@ function setBusy(on) {
  * The API calls are debounced and the drawing is not, so dragging the slider stays
  * responsive and spends at most one round per pause.
  */
-let isoTimer = null, isoSeq = 0;
+let isoTimer = null, isoSeq = 0, fillSeq = 0;
 
 function refresh() {
   render();
@@ -478,14 +635,29 @@ function refresh() {
     refresh();
   });
 
+  // Walking already routes to the answer itself, so there is no last stretch to opt
+  // out of. Disabled rather than hidden: a control that appears and disappears with
+  // the mode is harder to find than one that greys.
+  const walkleg = $("#walkleg");
+  const syncWalkLeg = () => {
+    walkleg.disabled = state.mode === "foot" || !PD;
+  };
+
   document.querySelectorAll(".modes button").forEach((b) => {
     b.addEventListener("click", () => {
       state.mode = b.dataset.mode;
       document.querySelectorAll(".modes button").forEach((o) =>
         o.setAttribute("aria-pressed", String(o === b)));
+      syncWalkLeg();
       refresh();
     });
   });
+
+  walkleg.addEventListener("change", (e) => {
+    state.walkLeg = e.target.checked;
+    refresh();
+  });
+  syncWalkLeg();
 
   const mins = $("#mins");
   mins.addEventListener("input", () => {

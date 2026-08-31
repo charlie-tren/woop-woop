@@ -82,6 +82,12 @@ ANYTHING = {"road", "building", "rail", "power", "aero"}
 # How you get there: civilisation's roads plus tracks and walking paths. A point is
 # only an answer if it is close to one of these - otherwise it is a pin in scrub.
 ACCESS = ANYTHING | {"way"}
+# What the DRIVE-ONLY answer is measured to. A point on a road is 0 m from "anything"
+# by the definition above, because a road IS civilisation - so "the emptiest place you
+# can drive to" cannot be asked of that field at all. It maximises this one instead:
+# the road you are standing on is excluded from the measurement but still required
+# underfoot, so the answer is the emptiest place you can park a car.
+BUILT = ANYTHING - {"road"}
 
 
 def water_mask(grid, d):
