@@ -33,7 +33,9 @@ const MODES = {
 
 const state = {
   mode: "foot", mins: 60,
-  origin: { lat: -27.4698, lon: 153.0251 },
+  // Sydney, not Brisbane. Changed 31/08/2026 - the homepage card is a picture of
+  // whatever this opens on, and the site is written from Sydney.
+  origin: { lat: -33.8688, lon: 151.2093 },
   exact: true,           // use the real road-network isochrone
   iso: null,             // its rings, once fetched
   isoNote: "",           // why it is not being used, if it is not
