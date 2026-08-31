@@ -49,8 +49,19 @@ main{flex:1; display:flex; min-height:0}
   background-size:40% 100%; background-repeat:no-repeat; animation:sweep 1.1s linear infinite;
 }
 @keyframes sweep{from{background-position:-40% 0}to{background-position:140% 0}}
+/* The indicator must not BE the animation. Reduced motion is set on the machine this
+   was built on, which turned a sweeping bar into a static 3px line at half opacity -
+   invisible, and indistinguishable from nothing happening. The chip carries the state
+   on its own; the bar is decoration on top of it. */
+#map .working{
+  position:absolute; top:12px; left:50%; transform:translateX(-50%); z-index:600;
+  background:var(--panel); color:var(--ink); border:1px solid var(--line);
+  border-radius:999px; padding:6px 13px; font-size:13px; box-shadow:var(--shadow);
+  display:none; pointer-events:none;
+}
+#map.busy .working{display:block}
 @media (prefers-reduced-motion:reduce){
-  #map.busy::after{animation:none; background:var(--accent); opacity:.5}
+  #map.busy::after{animation:none; background:var(--accent); opacity:.9}
 }
 aside{
   width:330px; flex:none; border-left:1px solid var(--line); background:var(--panel);
@@ -104,7 +115,7 @@ a{color:var(--accent)}
 </header>
 
 <main>
-  <div id="map"></div>
+  <div id="map"><div class="working">Checking the roads</div></div>
   <aside>
     <fieldset>
       <legend>Starting point</legend>
