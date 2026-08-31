@@ -48,15 +48,41 @@ header, `locations` as `[[lon, lat]]` (longitude FIRST), `range` in seconds, and
 `range_type: "time"`. Profiles map to the three modes as
 `foot-walking`, `cycling-regular`, `driving-car`.
 
-## Isochrones stop at one hour
+## The one-hour ceiling is DRIVING ONLY
 
-Measured on 19/08/2026: a range above 3600 seconds is refused with error 3004,
-"Parameter 'range=4200.0' is out of range. Maximum possible value is 3600." This is not
-a routing failure and not a quota - it is a hard ceiling on the free plan, and it first
-showed up looking like two random "no route" errors on 120-minute requests.
+Corrected 31/08/2026. The original note here read "Isochrones stop at one hour" and
+generalised a single measurement to all three profiles. That was wrong, and it cost the
+project real range: `app.js` carried one `ISO_MAX_MINUTES = 60`, so walking and riding
+were dropped to the estimate circle above an hour for months, for no reason at all.
 
-The time control goes to four hours, so above one hour the real-roads check cannot
-answer at all. The page says so rather than falling back silently.
+Re-measured against the live Worker from the page's own origin:
+
+| profile | 120 min | 240 min |
+| --- | --- | --- |
+| `foot-walking` | 200 | 200 |
+| `cycling-regular` | 200 | 200 |
+| `driving-car` | error 3004, "Maximum possible value is 3600" | - |
+
+openrouteservice's restrictions page gives the actual limits: **foot to 20 hours,
+cycling to 5 hours, driving to 1 hour.** Range DISTANCE is capped at 120 km on all
+profiles, which time-based ranges do not touch.
+
+So the ceiling belongs per profile, and only driving ever falls back to a circle.
+Our own Worker caps at `MAX_SECONDS = 4 * 3600`, which is now the binding constraint
+for foot and bike rather than anything upstream.
+
+The lesson is the one already in `feedback-cover-and-verify-breadth`: a limit measured
+on ONE input is a fact about that input. Three requests would have caught this, and the
+original note was written after testing exactly one.
+
+## Nested ranges are one call
+
+`range` takes an ARRAY - `[900, 1800, 2700, 3600]` returns four nested polygons for a
+single request against the quota. The page needs those bands to charge the walked leg
+against the time budget, so this is what the Worker should send. It currently builds
+`range: [seconds]` from one number and the page fires N parallel requests instead,
+which works and caches but spends N times the quota on a cold view. Fold it into the
+next deploy.
 
 ## Why it goes in a Worker
 

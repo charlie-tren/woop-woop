@@ -38,11 +38,20 @@ h1 img{height:30px; width:auto; display:block}
   header .tag{order:3; width:100%; top:0}
 }
 header p{margin:0; color:var(--muted); font-size:13.5px}
-header .tag{position:relative; top:-5px}
+header .tag{position:relative; top:-9px}
 header .home{margin-left:auto}
 header a{color:var(--muted)}
 main{flex:1; display:flex; min-height:0}
-#map{flex:1; min-width:0; background:var(--bg)}
+#map{flex:1; min-width:0; background:var(--bg); position:relative}
+#map.busy::after{
+  content:""; position:absolute; inset:0 0 auto 0; height:3px; z-index:500;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  background-size:40% 100%; background-repeat:no-repeat; animation:sweep 1.1s linear infinite;
+}
+@keyframes sweep{from{background-position:-40% 0}to{background-position:140% 0}}
+@media (prefers-reduced-motion:reduce){
+  #map.busy::after{animation:none; background:var(--accent); opacity:.5}
+}
 aside{
   width:330px; flex:none; border-left:1px solid var(--line); background:var(--panel);
   padding:18px; overflow:auto;
@@ -112,7 +121,6 @@ a{color:var(--accent)}
     <fieldset>
       <legend>Map</legend>
       <label class="check"><input type="checkbox" id="satellite"> Satellite imagery</label>
-      <label class="check"><input type="checkbox" id="exact" checked> Use real roads</label>
     </fieldset>
 
     <fieldset>
@@ -123,11 +131,7 @@ a{color:var(--accent)}
 
     <div id="answer" class="empty">Working it out&hellip;</div>
 
-    <p class="caveat">
-      Range follows the real road network up to an hour. Beyond that, or if the
-      routing is unavailable, it falls back to a circle - a poor substitute. The
-      emptiness underneath is exact either way, across all of Australia.
-    </p>
+    <p class="caveat">Australia only, so far.</p>
   </aside>
 </main>
 
