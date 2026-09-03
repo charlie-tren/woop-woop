@@ -21,11 +21,13 @@ Writes data/au/water500.npz, which merge ORs into the land mask as water.
 """
 import sys, time
 import numpy as np
-import osmium
-from PIL import Image, ImageDraw
 sys.path.insert(0, "build")
-from au import AUS
-from raster import Grid
+
+# osmium, PIL and the au/raster modules are imported inside main() on purpose. The
+# rule below (keep_substantial) is one of the functions that decides a shipped answer,
+# so it is under test, and the CI job installs pytest/numpy/scipy only - importing the
+# heavy half at module level would make the test suite unimportable there while passing
+# perfectly on this machine.
 
 # STRICT only, matching check_water.py. Wetland is deliberately excluded: a claypan or
 # a salt flat is walkable and Lake Eyre is dry most of the year, so calling it water
@@ -86,6 +88,11 @@ def keep_substantial(water):
 
 
 def main(pbf="data/australia-latest.osm.pbf"):
+    import osmium
+    from PIL import Image, ImageDraw
+    from au import AUS
+    from raster import Grid
+
     g = Grid(AUS, LAND_CELL)
     print(f"water grid {g.w} x {g.h} at {LAND_CELL:.0f} m")
     img = Image.new("1", (g.w, g.h), 0)
