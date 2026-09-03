@@ -61,13 +61,41 @@ comparison. The raster is build scaffolding and never leaves the machine.
 
     python build/au.py                  # one stream over the .osm.pbf -> chunk buckets
     python build/au_build.py coarse     # 2 km land/ocean grid for the whole continent
-    python build/au_build.py chunks     # per chunk: rasterise, two EDTs, mine peaks
-    python build/au_build.py merge      # prune and pack into docs/data/peaks.*
+    python build/au_build.py chunks     # per chunk: rasterise, EDTs, mine peaks
+    python build/au_build.py land       # 500 m land mask, for clipping the drawn shape
+    python build/au_build.py field      # CONTINENTAL 2 km distance fields - see below
+    python build/water_areas.py         # assembled water polygons for the land mask
+    python build/au_build.py merge      # correct, prune and pack into docs/data/
+    python build/check_water.py <pbf> docs/data/peaks.json --drop   # independent sieve
+    python build/verify_drive.py 6 main # independent check of the shipped distances
 
-Australia: 79 chunks, 78.9M vertices, about 25 minutes end to end. 1.09M raw peaks,
-188k shipped, 5 MB.
+Australia: 79 non-empty chunks, 11.5M ways, 90.1M vertices, about an hour end to end.
+873,751 raw peaks, 421,133 shipped after the water sieve; 82,813 raw drive-only peaks,
+63,957 shipped. Over the wire, gzipped by GitHub Pages: peaks 3.5 MB, drive-only 787 KB,
+the 500 m land mask 325 KB, the landmass grid 8 KB.
 
-Four traps this hit, all of them silent:
+Six traps this hit, all of them silent:
+
+* **A per-chunk distance transform CANNOT report a distance larger than its buffer.**
+  It measures to the nearest feature the chunk LOADED, and where the true nearest sits
+  outside the 0.6 degree (~66 km) buffer it quietly measures to something further away
+  instead. This shipped: the headline read 176.4 km where an independent 300 km
+  point-to-segment search finds 137.5 km, overstated by 28%, and the drive-only field
+  was out by up to 54 km. Buildings and power lines are sparse enough in the desert
+  that the blind spot covers exactly the country that produces the best answers.
+  Fixed by `au_build.py field` - one continental 2 km grid, taken as a MINIMUM against
+  the per-chunk value. The minimum is the right operator because a per-chunk EDT can
+  only err upwards: it can miss a nearer feature, never invent one. Small city
+  distances keep the 100 m grid's precision; remote ones get the correction.
+  `build/verify_drive.py` is the check, and it must be run after any change here.
+* **`EmptyTagFilter` discards the multipolygon rings `water_relation_ways` exists to
+  find.** A relation's rings are UNTAGGED ways - the tags live on the relation - so the
+  speed filter threw away precisely what the water pass had just gone looking for.
+  Sydney Harbour is `natural=water` / `water=harbour` on a relation whose rings are 41
+  untagged ways; its outline never assembled, and because OSM's coastline crosses the
+  harbour mouth rather than tracing the shoreline, the ocean flood could not reach it
+  either. The harbour came out as standable LAND, in the same connected region as the
+  whole inland continent.
 
 * **Seed the fine water flood from the OCEAN, never from `wet`.** Wet includes inland
   lakes, the fine labelling only splits on the coastline, so one lake cell drags the
@@ -78,14 +106,41 @@ Four traps this hit, all of them silent:
 * **Component ids are ranked by size, so resolve an origin to the LOWEST id nearby**,
   not the nearest. Nearest put Brisbane on a sand island offshore.
 * **Distances are stored in decametres.** A uint16 of metres tops out at 65.5 km and
-  the best peak in Australia is 176.7 km, so metres clipped the entire desert to one
+  the best peak in Australia is over 150 km, so metres clipped the entire desert to one
   number.
+
+## Two questions, two peak files
+
+**Walk and ride** answer from `peaks.bin`, which maximises distance from ANYTHING -
+roads included - so its answers sit at the end of fire trails and footpaths. Best in
+Australia: 154.7 km.
+
+**Drive, with the last stretch switched off**, answers from `peaks-drive.bin`. A point
+on a road is 0 m from anything by the definition above, because a road IS civilisation,
+so that file maximises a different field: the road is excluded from the MEASUREMENT but
+still required underfoot. It is the emptiest place you can park. Best: 119.1 km. The
+headline says "from anything but roads" in that mode, because it is a different claim.
+
+Note the consequence of excluding roads: two highways crossing in the desert both score
+well, since no road counts toward the distance. That follows from the definition rather
+than being a fault in it.
 
 ## Status
 
-The emptiness measurement is exact and verified against an independent nearest-neighbour
-search (agreement within 40 m, inside one cell). **The travel range is still a
-straight-line estimate**; the real version calls a routing engine for an isochrone.
+Distances are checked by `build/verify_drive.py` against an independent 300 km
+point-to-segment search, on an ASYMMETRIC criterion. Claiming MORE emptiness than exists
+is the product lying; claiming less is caution. Currently the main field overstates
+nothing at all and understates by at most 2.6 km, and the drive field's worst
+overstatement is 1.1 km on a 113 km answer - inside what a 2 km correction grid can
+explain. `build/check_water.py --drop` is the other guard: it assembles real water
+multipolygons and removed 280 peaks that were sitting on open water.
+
+**Reachability follows the real road network**, through openrouteservice, and the time
+budget covers BOTH legs - the drive to the last built ground and the walk in from it -
+using nested isochrone bands to bound the driven part. Only DRIVING is capped at an
+hour; foot and bike run to the slider's limit. Beyond that cap, driving falls back to a
+circle and says so.
+
 Coverage is all of Australia.
 
 Data: [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, via

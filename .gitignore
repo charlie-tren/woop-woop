@@ -1,6 +1,11 @@
-# The whole data directory is build scratch: the .osm.pbf, the per-chunk feature
+# The ROOT data directory is build scratch: the .osm.pbf, the per-chunk feature
 # buckets, the rasters, the preview renders. Only docs/data/ ships.
-data/
+#
+# Anchored with a leading slash, because a bare "data/" matches a directory of that
+# name at ANY depth - including docs/data, the one directory here that MUST ship. The
+# already-tracked files kept working, which is what made it invisible: peaks.bin showed
+# as modified as usual while land.bin and peaks-drive.bin were silently unaddable.
+/data/
 __pycache__/
 .venv/
 

@@ -156,10 +156,22 @@ def bucket(pbf, boxes):
     b = Bucketer(boxes, WORK)
     water_ways = water_relation_ways(pbf)
     t0 = time.time()
+    # NO EmptyTagFilter here, and that is the whole point.
+    #
+    # It was here as a speed filter, and it silently defeated water_relation_ways()
+    # sitting right above it. A multipolygon's rings are UNTAGGED ways - the tags live
+    # on the relation - so the filter threw away precisely the ways the water pass had
+    # just gone looking for. Measured on Sydney Harbour, which is a natural=water /
+    # water=harbour relation: 41 of its 60 member ways carry no tags at all, and the
+    # other 19 carry only source/attribution metadata. Its outline therefore never
+    # assembled, binary_fill_holes had no closed ring to fill, and the harbour came out
+    # as standable LAND - in the same connected region as the whole inland continent,
+    # since the coastline crosses the harbour mouth rather than tracing its shoreline.
+    #
+    # Cost of dropping it is stream time; want() rejects an untagged way immediately.
     fp = (osmium.FileProcessor(pbf)
           .with_locations()
-          .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY))
-          .with_filter(osmium.filter.EmptyTagFilter()))
+          .with_filter(osmium.filter.EntityFilter(osmium.osm.WAY)))
     n = 0
     for w in fp:
         n += 1

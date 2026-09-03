@@ -1,5 +1,5 @@
 {
- "count": 422596,
+ "count": 421133,
  "coord_scale": 100000.0,
  "dist_scale_m": 10,
  "on_network": true,
@@ -22,7 +22,30 @@
   "east": 154.5,
   "bytes": 1
  },
- "max_m": 176404.90625,
+ "max_m": 154738.484375,
  "area": "Australia",
+ "land": {
+  "width": 8441,
+  "height": 7895,
+  "south": -44.5,
+  "west": 112.0,
+  "north": -9.0,
+  "east": 154.5,
+  "cell_m": 500.0,
+  "file": "land.bin",
+  "bitorder": "little"
+ },
+ "drive": {
+  "count": 63957,
+  "max_m": 119096.6015625,
+  "file": "peaks-drive.bin",
+  "measured_to": [
+   "aero",
+   "building",
+   "power",
+   "rail"
+  ],
+  "on": "road"
+ },
  "water_sieve": "assembled polygons, osmium areas + shapely"
 }

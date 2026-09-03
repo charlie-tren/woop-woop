@@ -36,20 +36,31 @@ LAND_DIR = f"{WORK}/land"
 # the merge prunes harder still.
 DRIVE_SPACING_M = 2000
 
-# The continental land mask shipped for clipping the drawn isochrone. 1 km, because
-# Sydney Harbour is one to three kilometres wide and the 4 km component grid already
-# shipped cannot resolve it at all - masking with that would eat real land.
-LAND_CELL = 1000.0
+# The continental land mask shipped for clipping the drawn isochrone.
+#
+# 500 m, and the resolution was arrived at the hard way. The 4 km component grid already
+# shipped cannot see a harbour at all. At 1 km, with a majority threshold, EVERY point in
+# Sydney Harbour still came back as land - the main channel is only about 1.5 km across,
+# so no threshold at that cell size can resolve it, and biasing toward water instead just
+# eroded a kilometre off every coastline in the country. 500 m puts two to three cells
+# across the channel, which is the first size that can actually answer the question.
+LAND_CELL = 500.0
 
 
 def land_patch(g, wet, box, gg):
     """The chunk's own box, resampled from its 100 m water mask onto the 1 km grid.
 
-    Sampled 3x3 within each coarse cell and called land only if every sample is land,
-    so the reduction loses NARROW LAND rather than narrow water. That is the safe
-    direction for the job: the mask exists to stop a fill being painted over a harbour,
-    and leaving a sliver of foreshore unshaded is a far smaller lie than shading the
-    harbour.
+    Area-weighted: the coarse cell is land if MOST of it is land, sampled 10x10 to
+    match the 10:1 cell ratio.
+
+    The first version took 3x3 samples and called a cell land only if all nine were,
+    reasoning that losing narrow land beat shading a harbour. That was far too blunt.
+    Any cell touching a single 100 m water cell went to water, and in a city almost
+    every cell contains a river, a pond or a park lake - the Sydney crop came back a
+    50/50 checkerboard of noise instead of a coastline. A majority threshold is both
+    more honest and, on the harbour it was written for, just as effective: the main
+    channel is one to two kilometres wide, so those cells are mostly water and still
+    read as water.
     """
     x0, y0 = gg.to_px(box[1], box[2])
     x1, y1 = gg.to_px(box[3], box[0])
@@ -58,15 +69,16 @@ def land_patch(g, wet, box, gg):
     if gx1 <= gx0 or gy1 <= gy0:
         return None
     ys, xs = np.mgrid[gy0:gy1, gx0:gx1]
-    land = np.ones(xs.shape, bool)
-    for fy in (0.17, 0.5, 0.83):
-        for fx in (0.17, 0.5, 0.83):
-            lon, lat = gg.to_lonlat(xs + fx, ys + fy)
+    n = int(round(LAND_CELL / CELL))          # 10 samples per side at 1 km over 100 m
+    hits = np.zeros(xs.shape, np.int16)
+    for j in range(n):
+        for i2 in range(n):
+            lon, lat = gg.to_lonlat(xs + (i2 + 0.5) / n, ys + (j + 0.5) / n)
             cx, cy = g.to_px(lon, lat)
             cx = np.clip(cx.astype(np.int64), 0, g.w - 1)
             cy = np.clip(cy.astype(np.int64), 0, g.h - 1)
-            land &= ~wet[cy, cx]
-    return gx0, gy0, land
+            hits += ~wet[cy, cx]
+    return gx0, gy0, hits * 2 >= n * n
 
 
 # ------------------------------------------------------------------ stage: coarse
@@ -132,21 +144,10 @@ def coarse():
 
 
 # ------------------------------------------------------------------ stage: chunks
-def one_chunk(i, box, coarse_ocean, coarse_comp, cg, gg):
-    d = read_chunk(f"{WORK}/c{i:03d}.bin")
-    if d is None:
-        return 0
-    lon, lat, off, kind = d
-    bbox = (box[0] - BUFFER, box[1] - BUFFER, box[2] + BUFFER, box[3] + BUFFER)
-    g = Grid(bbox, CELL)
-
-    occ = burn(g, lon, lat, off, np.isin(kind, list(ANYTHING)))
-    if not occ.any():
-        return 0
-    acc = burn(g, lon, lat, off, np.isin(kind, list(ACCESS)))
-    dist = ndimage.distance_transform_edt(~occ, sampling=CELL).astype(np.float32)
-    reach = ndimage.distance_transform_edt(~acc, sampling=CELL).astype(np.float32)
-
+def chunk_water(g, lon, lat, off, kind, coarse_ocean, cg):
+    """The chunk's 100 m water mask. Shared by the peak stage and the land stage:
+    duplicating a flood fill is exactly how the two ends of this build would come to
+    disagree about where the sea is."""
     # Fine water mask, seeded from the coarse ocean rather than from a box edge. A
     # chunk edge is not reliably ocean, and a flood seeded on the wrong side of the
     # coast inverts the whole mask while still looking plausible.
@@ -178,6 +179,25 @@ def one_chunk(i, box, coarse_ocean, coarse_comp, cg, gg):
         # The polygon sieve in build/check_water.py is the authority on water anyway -
         # it assembles real multipolygons instead of guessing from a grid - so the
         # raster only has to be roughly right and the sieve removes the rest.
+    return wet
+
+
+def one_chunk(i, box, coarse_ocean, coarse_comp, cg, gg):
+    d = read_chunk(f"{WORK}/c{i:03d}.bin")
+    if d is None:
+        return 0
+    lon, lat, off, kind = d
+    bbox = (box[0] - BUFFER, box[1] - BUFFER, box[2] + BUFFER, box[3] + BUFFER)
+    g = Grid(bbox, CELL)
+
+    occ = burn(g, lon, lat, off, np.isin(kind, list(ANYTHING)))
+    if not occ.any():
+        return 0
+    acc = burn(g, lon, lat, off, np.isin(kind, list(ACCESS)))
+    dist = ndimage.distance_transform_edt(~occ, sampling=CELL).astype(np.float32)
+    reach = ndimage.distance_transform_edt(~acc, sampling=CELL).astype(np.float32)
+
+    wet = chunk_water(g, lon, lat, off, kind, coarse_ocean, cg)
 
     # Only the chunk's OWN box is answerable; the buffer exists so the edges of that
     # box measure correctly, and must never contribute peaks of its own.
@@ -285,6 +305,125 @@ def chunks_stage():
     print(f"  {total:,} peaks across all chunks")
 
 
+# ------------------------------------------------------------------- stage: field
+def field_stage():
+    """Continental 2 km distance fields, to fix what a 66 km chunk buffer cannot see.
+
+    A per-chunk EDT can only OVER-estimate. It measures to the nearest feature the chunk
+    LOADED, and where the true nearest sits outside the 0.6 degree buffer it silently
+    measures to something further away instead. Nothing about the output looks wrong.
+
+    Measured against an independent 300 km point-to-segment search (build/verify_drive.py):
+    the best main answer read 176.4 km where the truth is 137.5 km, overstated by 28%,
+    and the drive answers were out by up to 54 km. This affected the SHIPPED data, not
+    just the new field - buildings and power lines are sparse enough in the desert that
+    the blind spot covers exactly the country that produces the best answers.
+
+    One continental grid has no buffer and therefore no blind spot. At 2 km it quantises
+    a 100 km answer by a couple of cells, so merge takes the MINIMUM of the two fields:
+    small distances keep the 100 m grid's precision, large ones get the correction. The
+    minimum is always the right operator here precisely because the local field can only
+    err upwards.
+    """
+    cfg = json.load(open(f"{WORK}/chunks.json"))
+    g = Grid(AUS, COARSE)
+    print(f"field grid {g.w} x {g.h} at {COARSE:.0f} m")
+    anyf = np.zeros((g.h, g.w), bool)
+    builtf = np.zeros((g.h, g.w), bool)
+    t0 = time.time()
+    for i, box in enumerate(cfg["boxes"]):
+        d = read_chunk(f"{WORK}/c{i:03d}.bin")
+        if d is None:
+            continue
+        lon, lat, off, kind = d
+        anyf |= burn(g, lon, lat, off, np.isin(kind, list(ANYTHING)))
+        builtf |= burn(g, lon, lat, off, np.isin(kind, list(BUILT)))
+        print(f"  chunk {i:3d} ({time.time()-t0:.0f}s)", flush=True)
+    print(f"  {anyf.sum():,} cells hold something, {builtf.sum():,} hold something built")
+    d_any = ndimage.distance_transform_edt(~anyf, sampling=COARSE).astype(np.float32)
+    d_built = ndimage.distance_transform_edt(~builtf, sampling=COARSE).astype(np.float32)
+    print(f"  furthest from anything {d_any.max()/1000:.1f} km, "
+          f"from anything built {d_built.max()/1000:.1f} km")
+    np.savez_compressed(f"{WORK}/field.npz", d_any=d_any, d_built=d_built,
+                        bbox=np.array(AUS), cell=COARSE)
+    print(f"  -> {WORK}/field.npz")
+
+
+# Below this, the per-chunk 100 m field is AUTHORITATIVE and the continental one must
+# not touch it.
+#
+# The logic is what the buffer guarantees. If the local field returns a distance inside
+# the buffer, the feature it measured to genuinely IS the nearest - nothing closer could
+# have been outside the loaded data. Only beyond the buffer is the local value suspect.
+#
+# Getting this wrong the first time produced "0 m from anything" for every walking and
+# riding answer, which is far more visible than the bug it was fixing. A 2 km grid has a
+# road in every cell of every city, so the continental distance there is 0, and a plain
+# min() drove every urban answer to zero. The comment claiming small distances would
+# "keep the 100 m grid's precision" was simply false.
+#
+# 50 km, not 66: BUFFER is 0.6 degrees, and a degree of LONGITUDE is only 99.3 km at
+# this grid's reference latitude, so the guaranteed radius is about 59.6 km east-west.
+# 50 km leaves margin, and the fault it corrects only appears past 66 km anyway.
+LOCAL_TRUST_M = 50_000.0
+
+
+def cap_by_field(a, which):
+    """Correct distances the chunk buffer could not have measured. See field_stage."""
+    path = f"{WORK}/field.npz"
+    if not os.path.exists(path):
+        print("  NO field.npz - distances are UNCORRECTED and overstate remote answers")
+        return a
+    f = np.load(path)
+    fg = Grid(tuple(f["bbox"]), float(f["cell"]))
+    field = f["d_any"] if which == "any" else f["d_built"]
+    px = np.clip(((a[:, 1] - fg.west) * fg.m_per_deg_lon / fg.cell).astype(int),
+                 0, fg.w - 1)
+    py = np.clip(((fg.north - a[:, 0]) * fg.m_per_deg_lat / fg.cell).astype(int),
+                 0, fg.h - 1)
+    before = a[:, 2].copy()
+    suspect = before > LOCAL_TRUST_M
+    a[suspect, 2] = np.minimum(before[suspect], field[py[suspect], px[suspect]])
+    cut = before - a[:, 2]
+    print(f"  {int(suspect.sum()):,} of {len(a):,} peaks exceed the "
+          f"{LOCAL_TRUST_M/1000:.0f} km the chunk buffer can vouch for; "
+          f"corrected {int((cut > 1).sum()):,}, largest {cut.max()/1000:.1f} km")
+    kept_small = int((before <= LOCAL_TRUST_M).sum())
+    print(f"  {kept_small:,} peaks left untouched - the 100 m field is authoritative "
+          f"there, and a 2 km grid reads 0 m inside any city")
+    return a
+
+
+# -------------------------------------------------------------------- stage: land
+def land_stage():
+    """Rebuild the land patches alone. Same water mask as the peak stage, by construction."""
+    cfg = json.load(open(f"{WORK}/chunks.json"))
+    c = np.load(f"{WORK}/coarse.npz")
+    cg = Grid(tuple(c["bbox"]), float(c["cell"]))
+    ocean = ndimage.binary_erosion(c["ocean"], iterations=2)
+    gg = Grid(AUS, LAND_CELL)
+    print(f"land mask grid {gg.w} x {gg.h} at {LAND_CELL:.0f} m")
+    os.makedirs(LAND_DIR, exist_ok=True)
+    t0, done = time.time(), 0
+    for i, box in enumerate(cfg["boxes"]):
+        d = read_chunk(f"{WORK}/c{i:03d}.bin")
+        if d is None:
+            continue
+        lon, lat, off, kind = d
+        bbox = (box[0] - BUFFER, box[1] - BUFFER, box[2] + BUFFER, box[3] + BUFFER)
+        g = Grid(bbox, CELL)
+        wet = chunk_water(g, lon, lat, off, kind, ocean, cg)
+        lp = land_patch(g, wet, box, gg)
+        if lp is None:
+            continue
+        np.savez_compressed(f"{LAND_DIR}/l{i:03d}.npz",
+                            x0=lp[0], y0=lp[1], land=lp[2])
+        done += 1
+        print(f"  chunk {i:3d} {100*lp[2].mean():5.1f}% land  "
+              f"({time.time()-t0:.0f}s)", flush=True)
+    print(f"  {done} patches")
+
+
 # ------------------------------------------------------------------- stage: merge
 def merge(out="docs/data/peaks.json"):
     """Concatenate the chunk peak lists, prune, and pack for the browser."""
@@ -297,6 +436,7 @@ def merge(out="docs/data/peaks.json"):
             rows.append(np.load(p))
     a = np.concatenate(rows)
     print(f"  {len(a):,} raw peaks")
+    a = cap_by_field(a, "any")
 
     # PRUNE. 93% of peaks are under 500 m from something - a paddock between two roads,
     # not a remote place, and 20 MB of them. But dropping them outright leaves someone
@@ -383,13 +523,16 @@ def merge(out="docs/data/peaks.json"):
 
 
 def merge_land(out):
-    """Assemble the per-chunk land patches into one 1 km mask, shipped as a 1-bit PNG.
+    """Assemble the per-chunk land patches into one mask, shipped as packed bits.
 
-    PNG rather than a raw bitmap because a land mask is enormous flat regions and
-    deflate eats it; the browser decodes it with the image decoder it already has and
-    reads the pixels off a canvas. Raw it is 2 MB.
+    NOT a PNG. A PNG has to be decoded through a canvas to read its pixels, and at 500 m
+    the continent is 67 megapixels - a quarter of a gigabyte of ImageData for a single
+    bit per cell. Packed bits are 8.3 MB, which GitHub Pages gzips on the way out (the
+    same thing it does to peaks.bin, 9.3 MB to 3.55 MB over the wire), and the browser
+    indexes them directly with no decode step and no memory spike.
+
+    Bit order is LITTLE, matching the shift the page uses to read it.
     """
-    from PIL import Image
     gg = Grid(AUS, LAND_CELL)
     land = np.zeros((gg.h, gg.w), bool)
     seen = 0
@@ -398,15 +541,54 @@ def merge_land(out):
         x0, y0, patch = int(d["x0"]), int(d["y0"]), d["land"]
         land[y0:y0 + patch.shape[0], x0:x0 + patch.shape[1]] |= patch
         seen += 1
-    path = out.replace("peaks.json", "land.png")
-    Image.fromarray((land * 255).astype(np.uint8), "L").convert("1").save(
-        path, optimize=True)
+    # Assembled polygons override the flood, because they are the only thing that gets
+    # a big multipolygon right. Sydney Harbour is water=harbour on a relation whose rings
+    # are untagged member ways, with the coastline crossing its mouth - the flood puts it
+    # in the same region as the inland continent and the outline fill cannot close it.
+    # build/water_areas.py builds this from osmium's multipolygon assembler.
+    wpath = f"{WORK}/water500.npz"
+    if os.path.exists(wpath):
+        w = np.load(wpath)
+        if float(w["cell"]) != LAND_CELL or w["water"].shape != land.shape:
+            raise RuntimeError(
+                f"water500 is {w['water'].shape} at {float(w['cell'])} m, "
+                f"land mask is {land.shape} at {LAND_CELL} m")
+        # Narrow rivers are filtered here rather than in the raster, so the shipped
+        # mask always reflects the current rule without re-streaming the extract.
+        sys.path.insert(0, "build")
+        from water_areas import keep_substantial
+        before = land.sum()
+        land &= ~keep_substantial(w["water"])
+        print(f"  polygon water removed {before - land.sum():,} cells "
+              f"({100.0*(before-land.sum())/land.size:.2f}% of the box)")
+    else:
+        print("  NO water500.npz - harbours and big lakes will read as LAND")
+
+    # Drop land specks. At 500 m a rock, a wharf or a half-land cell survives as an
+    # isolated island, and the fill then paints little grey blocks out on the harbour -
+    # visible in exactly the view this mask exists to fix. Nothing under a square
+    # kilometre is somewhere the answer can be anyway: peaks are filtered by landmass
+    # component separately, so this only affects what gets SHADED.
+    lab, _ = ndimage.label(land)
+    if lab.max():
+        sizes = np.bincount(lab.ravel())
+        min_cells = int(round(1_000_000 / (LAND_CELL * LAND_CELL)))   # 1 km2
+        tiny = np.zeros(sizes.size, bool)
+        tiny[1:] = sizes[1:] < min_cells
+        speck = tiny[lab]
+        land &= ~speck
+        print(f"  dropped {int(speck.sum()):,} cells in "
+              f"{int(tiny.sum()):,} land specks under {min_cells} cells")
+
+    path = out.replace("peaks.json", "land.bin")
+    np.packbits(land.ravel(), bitorder="little").tofile(path)
     pct = 100.0 * land.sum() / land.size
     print(f"  land mask {gg.w} x {gg.h} from {seen} patches, {pct:.1f}% land "
           f"-> {path}  {os.path.getsize(path)/1024:,.0f} KB")
     s_, w_, n_, e_ = AUS
     return {"width": gg.w, "height": gg.h, "south": s_, "west": w_,
-            "north": n_, "east": e_, "cell_m": LAND_CELL, "file": "land.png"}
+            "north": n_, "east": e_, "cell_m": LAND_CELL, "file": "land.bin",
+            "bitorder": "little"}
 
 
 def merge_drive(out, comp, remap, cg, sizes):
@@ -417,6 +599,7 @@ def merge_drive(out, comp, remap, cg, sizes):
     rows = [np.load(f"{DRIVE_DIR}/{f}") for f in sorted(os.listdir(DRIVE_DIR))]
     a = np.concatenate(rows)
     print(f"  {len(a):,} raw drive peaks")
+    a = cap_by_field(a, "built")
 
     # Same two-tier prune as the main set, and for the same reason: without the thinned
     # tail a drive from the middle of a city has no answer at all. The road network is
@@ -458,4 +641,8 @@ def merge_drive(out, comp, remap, cg, sizes):
 
 
 if __name__ == "__main__":
-    {"coarse": coarse, "chunks": chunks_stage, "merge": merge}[sys.argv[1]]()
+    # landbin rewrites ONLY docs/data/land.bin. The mask is independent of the peaks,
+    # so tuning it must not force a re-merge and another 20 minute water sieve.
+    {"coarse": coarse, "chunks": chunks_stage, "land": land_stage,
+     "field": field_stage, "merge": merge,
+     "landbin": lambda: merge_land("docs/data/peaks.json")}[sys.argv[1]]()

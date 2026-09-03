@@ -189,15 +189,16 @@ function ringBounds(ring) {
 let meta, P, PD, comp, map, layers = {};
 
 /* ---------- the land mask ---------- */
-/* One bit per square kilometre of the continent, shipped as a 1-bit PNG.
+/* One bit per 500 m cell of the continent, shipped as packed bits.
  *
- * It exists because the isochrone is a generalised hull: where two reachable shores
- * face each other it spans the water between them, and the fill was being painted over
- * Sydney Harbour. The component grid already shipped is 4 km, which cannot resolve a
- * harbour one to three kilometres wide - masking with that would eat real foreshore.
+ * It exists because the isochrone is a generalised hull: where two reachable shores face
+ * each other it spans the water between them, and the fill was being painted over Sydney
+ * Harbour. The 4 km component grid already shipped cannot resolve a harbour at all, and
+ * at 1 km every point in the channel still read as land - it is only about 1.5 km across.
  *
- * Kept BIT-PACKED. Decoded off a canvas once and then thrown away: the continent is
- * 16.6M cells, which is 2.1 MB of bits and 66 MB of RGBA.
+ * Packed bits rather than a PNG on purpose: a PNG would have to go through a canvas to
+ * be read, and 67 megapixels of ImageData is a quarter of a gigabyte for one bit a cell.
+ * This is 8.3 MB, gzipped by Pages on the way out, and indexed directly.
  */
 let landBits = null, landG = null;
 
@@ -212,21 +213,12 @@ async function loadLand() {
   g.mLat = mLat;
   landG = g;
 
-  const img = new Image();
-  img.src = DATA + g.file;
-  await img.decode();
-  const c = document.createElement("canvas");
-  c.width = g.width; c.height = g.height;
-  const cx = c.getContext("2d", { willReadFrequently: true });
-  cx.drawImage(img, 0, 0);
-  const px = cx.getImageData(0, 0, g.width, g.height).data;
-  const n = g.width * g.height;
-  const bits = new Uint8Array((n + 7) >> 3);
-  for (let i = 0; i < n; i++) {
-    if (px[i * 4] > 127) bits[i >> 3] |= 1 << (i & 7);
+  const buf = await (await fetch(DATA + g.file)).arrayBuffer();
+  const need = ((g.width * g.height) + 7) >> 3;
+  if (buf.byteLength !== need) {
+    throw new Error("land mask is " + buf.byteLength + " bytes, manifest wants " + need);
   }
-  landBits = bits;
-  c.width = c.height = 0;
+  landBits = new Uint8Array(buf);
 }
 
 function landAt(lat, lon) {
@@ -488,15 +480,19 @@ function render() {
   }
 
   const m = MODES[state.mode];
+  const gmode = state.mode === "car" ? "driving"
+    : state.mode === "bike" ? "bicycling" : "walking";
+  // The last leg is on foot only when there IS one; with it switched off the vehicle
+  // reaches the spot and the directions must say so.
   const wfrom = walksToSpot() ? state.origin : a.access;
-  const gwalk = "https://www.google.com/maps/dir/?api=1&travelmode=walking&origin=" +
-    wfrom.lat.toFixed(5) + "," + wfrom.lon.toFixed(5) +
+  const wmode = walksToSpot() ? gmode : "walking";
+  const gwalk = "https://www.google.com/maps/dir/?api=1&travelmode=" + wmode +
+    "&origin=" + wfrom.lat.toFixed(5) + "," + wfrom.lon.toFixed(5) +
     "&destination=" + a.lat.toFixed(5) + "," + a.lon.toFixed(5);
   const gmaps = "https://www.google.com/maps/dir/?api=1&origin=" +
     state.origin.lat.toFixed(5) + "," + state.origin.lon.toFixed(5) +
     "&destination=" + a.access.lat.toFixed(5) + "," + a.access.lon.toFixed(5) +
-    "&travelmode=" + (state.mode === "car" ? "driving"
-      : state.mode === "bike" ? "bicycling" : "walking");
+    "&travelmode=" + gmode;
 
   box.className = "";
   const over = a.overBudget
@@ -509,14 +505,15 @@ function render() {
   // The trip, leg by leg. Walking routes to the spot itself; the wheeled modes stop
   // at the last built ground, and the rest is on foot whatever you came in.
   const legs = [];
+  const Verb = m.verb.charAt(0).toUpperCase() + m.verb.slice(1);
   if (walksToSpot()) {
     legs.push("<li>" + (a.travelMins === null
-      ? "Walk to <b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b>."
-      : "Walk there in under <b>" + fmtMins(a.travelMins) + "</b>.") + "</li>");
+      ? Verb + " to <b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b>."
+      : Verb + " there in under <b>" + fmtMins(a.travelMins) + "</b>.")
+      + "</li>");
   } else {
     const verb = a.travelMins === null
-      ? m.verb.charAt(0).toUpperCase() + m.verb.slice(1)
-      : "Under <b>" + fmtMins(a.travelMins) + "</b> " + m.verb;
+      ? Verb : "Under <b>" + fmtMins(a.travelMins) + "</b> " + m.verb;
     legs.push("<li>" + verb + " to <b>" +
       a.access.lat.toFixed(4) + ", " + a.access.lon.toFixed(4) +
       "</b>, the last built ground.</li>");
