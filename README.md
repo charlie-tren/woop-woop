@@ -62,7 +62,8 @@ comparison. The raster is build scaffolding and never leaves the machine.
     python build/au.py                  # one stream over the .osm.pbf -> chunk buckets
     python build/au_build.py coarse     # 2 km land/ocean grid for the whole continent
     python build/au_build.py chunks     # per chunk: rasterise, EDTs, mine peaks
-    python build/au_build.py land       # 500 m land mask, for clipping the drawn shape
+    python build/snap.py                # peaks onto real way geometry, sub-cell
+    python build/au_build.py land       # 250 m land mask, for clipping the drawn shape
     python build/au_build.py field      # CONTINENTAL 2 km distance fields - see below
     python build/water_areas.py         # assembled water polygons for the land mask
     python build/au_build.py merge      # correct, prune and pack into docs/data/
@@ -70,12 +71,22 @@ comparison. The raster is build scaffolding and never leaves the machine.
     python build/verify_drive.py 6 main # independent check of the shipped distances
 
 Australia: 79 non-empty chunks, 11.5M ways, 90.1M vertices, about an hour end to end.
-873,751 raw peaks, 421,133 shipped after the water sieve; 82,813 raw drive-only peaks,
-63,957 shipped. Over the wire, gzipped by GitHub Pages: peaks 3.5 MB, drive-only 787 KB,
-the 500 m land mask 325 KB, the landmass grid 8 KB.
+873,751 raw peaks, 415,451 shipped after snapping and the water sieve; 82,813 raw
+drive-only peaks, 63,101 shipped. Over the wire, gzipped by GitHub Pages: peaks 4.3 MB,
+drive-only 820 KB, the 250 m land mask 921 KB, the landmass grid 8 KB.
 
 Six traps this hit, all of them silent:
 
+* **"On the network" was true of the CELL and false of the coordinate.** The chunk stage
+  keeps cells where an access feature was burned (`reach <= 0`) and then reports the cell
+  CENTRE, which a 100 m cell puts up to ~70 m from the line that qualified it. Measured on
+  shipped answers: 30 to 60 m off the nearest path, while the page said "the spot is ON a
+  track, so you can follow it the whole way". `build/snap.py` moves each peak onto the
+  nearest point of real way geometry - median 38.6 m - and the drop-off onto a road.
+  It also exposed 45,320 peaks (5.2%) with no walkable way within 150 m at all: they had
+  qualified on a building outline, a railway or a power line, because ACCESS contains
+  those. Nearly every one had d == 0. They are DROPPED, not dragged, because moving a
+  peak several hundred metres would keep a distance measured somewhere it no longer is.
 * **A per-chunk distance transform CANNOT report a distance larger than its buffer.**
   It measures to the nearest feature the chunk LOADED, and where the true nearest sits
   outside the 0.6 degree (~66 km) buffer it quietly measures to something further away
@@ -133,7 +144,7 @@ is the product lying; claiming less is caution. Currently the main field oversta
 nothing at all and understates by at most 2.6 km, and the drive field's worst
 overstatement is 1.1 km on a 113 km answer - inside what a 2 km correction grid can
 explain. `build/check_water.py --drop` is the other guard: it assembles real water
-multipolygons and removed 280 peaks that were sitting on open water.
+multipolygons and removed 80 peaks that were sitting on open water.
 
 **Reachability follows the real road network**, through openrouteservice, and the time
 budget covers BOTH legs - the drive to the last built ground and the walk in from it -

@@ -38,13 +38,15 @@ DRIVE_SPACING_M = 2000
 
 # The continental land mask shipped for clipping the drawn isochrone.
 #
-# 500 m, and the resolution was arrived at the hard way. The 4 km component grid already
+# 250 m, and the resolution was arrived at the hard way. The 4 km component grid already
 # shipped cannot see a harbour at all. At 1 km, with a majority threshold, EVERY point in
 # Sydney Harbour still came back as land - the main channel is only about 1.5 km across,
 # so no threshold at that cell size can resolve it, and biasing toward water instead just
-# eroded a kilometre off every coastline in the country. 500 m puts two to three cells
-# across the channel, which is the first size that can actually answer the question.
-LAND_CELL = 500.0
+# eroded a kilometre off every coastline in the country. 500 m was the first size that
+# could answer the question at all; 250 m is here because the fill EDGE is quantised to
+# this grid, and at 500 m the coastline visibly stepped in 500 m blocks around the
+# harbour. Four times the cells, and the mask still gzips to about a megabyte.
+LAND_CELL = 250.0
 
 
 def land_patch(g, wet, box, gg):

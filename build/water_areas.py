@@ -31,7 +31,7 @@ from raster import Grid
 # a salt flat is walkable and Lake Eyre is dry most of the year, so calling it water
 # would both shrink the map and contradict the build's own definition.
 STRICT = {("natural", "water"), ("landuse", "reservoir"), ("waterway", "riverbank")}
-LAND_CELL = 500.0
+LAND_CELL = 250.0
 
 # A ring smaller than this is not drawn, and the reason is not tidiness.
 #
