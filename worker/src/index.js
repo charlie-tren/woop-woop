@@ -33,7 +33,10 @@ const ALLOWED = new Set([
 // 50 m apart produce the same isochrone to any accuracy that matters, and rounding is
 // what makes the cache actually hit: without it, every pixel of map is a fresh call.
 const COORD_DP = 3;                       // ~110 m
-const MAX_SECONDS = 4 * 3600;
+// Five hours, which is openrouteservice's own cycling ceiling and well inside its
+// 20 hour foot ceiling. Driving is capped at ONE hour upstream regardless (error 3004),
+// so this bound only ever binds on foot and bike.
+const MAX_SECONDS = 5 * 3600;
 // Bump whenever the upstream request body changes, to retire cached geometry.
 const SHAPE = "s0";
 

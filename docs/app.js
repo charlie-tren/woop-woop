@@ -67,7 +67,7 @@ function activeSet() {
 // foot to 20 hours, cycling to 5, driving to 1. The previous single ISO_MAX_MINUTES
 // of 60 applied the DRIVING limit to all three, so walking and riding had been
 // silently dropping to the circle above an hour for no reason.
-const ISO_MAX_MINUTES = { foot: 240, bike: 240, car: 60 };
+const ISO_MAX_MINUTES = { foot: 300, bike: 300, car: 60 };
 
 const state = {
   mode: "foot", mins: 60,
@@ -103,7 +103,12 @@ async function fetchIsochrone(origin, mode, mins) {
   if (!res.ok) {
     // 429 is the daily quota; anything else out here is usually openrouteservice
     // failing to route from a remote track, which the calibration hit 6 times in 108.
-    const err = new Error(res.status === 429 ? "quota" : "route");
+    // 400 from the Worker is its own range guard, which is a DIFFERENT thing from a
+    // routing failure and reads wrong as one. It also fires whenever the page asks for
+    // longer than the deployed Worker allows, which is exactly the window between
+    // raising the slider here and deploying the Worker that permits it.
+    const err = new Error(res.status === 429 ? "quota"
+      : res.status === 400 ? "range" : "route");
     err.code = res.status;
     throw err;
   }
@@ -593,6 +598,8 @@ function refresh() {
       state.bands = null;
       state.isoNote = err.message === "quota"
         ? "The routing quota for today is gone, so this is an estimate."
+        : err.message === "range"
+        ? "That is longer than the routing service will work out, so this is an estimate."
         : "No route could be worked out from here, so this is an estimate.";
     }
     setBusy(false);
