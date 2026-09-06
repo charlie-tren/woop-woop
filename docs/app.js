@@ -213,7 +213,26 @@ let meta, P, PD, comp, map, layers = {};
  */
 const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const WATER_RGB = [170, 211, 223];
-const WATER_TOL = 60;
+/* PER CHANNEL, not the sum of the three.
+ *
+ * The sum was 60 and it was catching whole land uses, because it treats a colour that is
+ * far off in ONE channel the same as one slightly off in all three. Measured over the
+ * tiles Charlie was looking at:
+ *
+ *   Rookwood Cemetery  #aacbaf  sum 56  - identical red, near-identical green, blue out
+ *                                         by 48. 62,468 pixels of cemetery read as water
+ *                                         and the whole cemetery went unfilled.
+ *   airport apron      #bbbbcc  sum 60  - exactly on the old threshold.
+ *   grey buildings     #d4d3d3  sum 54  - neutral grey, equidistant in every channel,
+ *                                         which is where most of the pixel speckle came
+ *                                         from as well.
+ *
+ * Requiring every channel within 20 rejects all three while still accepting water and
+ * its anti-aliased edges (#b1c9d3, #b2dbda). Measured share classified water, before and
+ * after: Rookwood 31.14% -> 0.48%, the airport 26.48% -> 12.32% (it really does have the
+ * Cooks River and Botany Bay on it), Sydney Harbour 79.64% -> 77.58%.
+ */
+const WATER_CH_TOL = 20;
 const MAJORITY_K = 9;
 const MAX_TILES = 24;
 
@@ -243,10 +262,12 @@ function loadTile(z, x, y) {
 function waterFromPixels(data, W, H) {
   const raw = new Uint8Array(W * H);
   const [wr, wg, wb] = WATER_RGB;
+  const t = WATER_CH_TOL;
   for (let i = 0, j = 0; i < raw.length; i++, j += 4) {
-    const d = Math.abs(data[j] - wr) + Math.abs(data[j + 1] - wg) +
-              Math.abs(data[j + 2] - wb);
-    if (d <= WATER_TOL) raw[i] = 1;
+    if (Math.abs(data[j] - wr) <= t && Math.abs(data[j + 1] - wg) <= t &&
+        Math.abs(data[j + 2] - wb) <= t) {
+      raw[i] = 1;
+    }
   }
   // Integral image over the raw water field, edge-clamped by clamping the lookups.
   const ii = new Int32Array((W + 1) * (H + 1));
@@ -883,12 +904,18 @@ function refresh() {
     refresh();
   });
 
-  // Walking already routes to the answer itself, so there is no last stretch to opt
-  // out of. Disabled rather than hidden: a control that appears and disappears with
-  // the mode is harder to find than one that greys.
+  // Walking already routes to the answer itself, so there is no last stretch to opt out
+  // of. This used to grey the control rather than hide it, on the reasoning that a
+  // control which comes and goes is harder to find than one that stays put. Charlie's
+  // call, 06/09/2026: "the last stretch shouldnt even be shown as an option for
+  // walking". A disabled checkbox still poses the question and still has to be read
+  // before you can dismiss it.
   const walkleg = $("#walkleg");
   const syncWalkLeg = () => {
-    walkleg.disabled = state.mode === "foot" || !PD;
+    const off = state.mode === "foot" || !PD;
+    walkleg.disabled = off;
+    const row = walkleg.closest("label");
+    if (row) row.hidden = off;
   };
 
   document.querySelectorAll(".modes button").forEach((b) => {

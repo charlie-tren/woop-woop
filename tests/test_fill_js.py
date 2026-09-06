@@ -33,16 +33,17 @@ if (start < 0 || end < 0 || end <= start) {
 }
 let slice = src.slice(start, end);
 if (!/function waterFromPixels/.test(slice)) { console.error('NO_FN'); process.exit(2); }
-slice += '\nmodule.exports = { waterFromPixels, WATER_RGB, WATER_TOL, MAJORITY_K };';
+slice += '\nmodule.exports = { waterFromPixels, WATER_RGB, WATER_CH_TOL, MAJORITY_K };';
 const mod = { exports: {} };
 new Function('module', 'exports', slice)(mod, mod.exports);
-const { waterFromPixels, WATER_RGB, WATER_TOL, MAJORITY_K } = mod.exports;
+const { waterFromPixels, WATER_RGB, WATER_CH_TOL, MAJORITY_K } = mod.exports;
 
 const spec = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 const { w, h, land } = spec;                 // land: [x0,y0,x1,y1] boxes drawn on water
+const bg = spec.bg || WATER_RGB;
 const px = new Uint8ClampedArray(w * h * 4);
 for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-  px[j] = WATER_RGB[0]; px[j+1] = WATER_RGB[1]; px[j+2] = WATER_RGB[2]; px[j+3] = 255;
+  px[j] = bg[0]; px[j+1] = bg[1]; px[j+2] = bg[2]; px[j+3] = 255;
 }
 for (const [x0, y0, x1, y1] of land) {
   for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
@@ -54,18 +55,21 @@ const out = waterFromPixels(px, w, h);
 let water = 0;
 for (let i = 0; i < out.length; i++) water += out[i];
 console.log(JSON.stringify({
-  water: water, total: w * h, k: MAJORITY_K, tol: WATER_TOL,
+  water: water, total: w * h, k: MAJORITY_K, tol: WATER_CH_TOL,
   grid: Array.from({length: h}, (_, y) =>
     Array.from({length: w}, (_, x) => out[y * w + x]).join('')),
 }));
 """
 
 
-def run(tmp_path, w, h, land):
+def run(tmp_path, w, h, land, bg=None):
     runner = tmp_path / "r.js"
     runner.write_text(RUNNER, encoding="utf-8")
     spec = tmp_path / "spec.json"
-    spec.write_text(json.dumps({"w": w, "h": h, "land": land}), encoding="utf-8")
+    body = {"w": w, "h": h, "land": land}
+    if bg is not None:
+        body["bg"] = list(bg)
+    spec.write_text(json.dumps(body), encoding="utf-8")
     p = subprocess.run(["node", str(runner), APP, str(spec)],
                        capture_output=True, text=True)
     assert p.returncode == 0, f"node failed: {p.stderr.strip()}"
@@ -81,7 +85,7 @@ def test_the_slice_is_actually_found(tmp_path):
     """
     r = run(tmp_path, 16, 16, [])
     assert r["k"] == 9, "the majority kernel changed; the 9x9 figure was measured"
-    assert r["tol"] == 60
+    assert r["tol"] == 20, "the per-channel tolerance changed"
     assert r["water"] == r["total"], "an all-water image must come back all water"
 
 
@@ -124,3 +128,57 @@ def test_dashes_beside_an_island_do_not_join_it(tmp_path):
     rows = r["grid"]
     assert all(c == "1" for c in rows[50]), "the dash row should be all water"
     assert rows[30][30] == "0", "the island centre should be land"
+
+
+# --------------------------------------------------------------------------------
+# The colours that were actually getting through, from the tiles Charlie was looking
+# at on 06/09/2026. Every one of these is a real OSM carto fill, and every one of them
+# was classified as water by the old sum-of-channels test at tolerance 60 - which is
+# why Rookwood Cemetery and the airport apron came out unfilled.
+
+CARTO = {
+    "water":            (170, 211, 223),   # #aad3df, the thing we do want
+    "water antialias":  (177, 201, 211),
+    "pale water":       (178, 219, 218),
+    "cemetery":         (170, 203, 175),   # #aacbaf - old sum distance 56
+    "airport apron":    (187, 187, 204),   # old sum distance 60, exactly on it
+    "grey building":    (212, 211, 211),   # old sum distance 54
+    "residential":      (224, 223, 223),
+    "park grass":       (205, 235, 176),
+    "forest":           (173, 209, 158),
+}
+
+
+@pytest.mark.parametrize("name", ["water", "water antialias", "pale water"])
+def test_water_shades_are_water(tmp_path, name):
+    r = run(tmp_path, 32, 32, [], bg=CARTO[name])
+    assert r["water"] == r["total"], f"{name} should classify as water"
+
+
+@pytest.mark.parametrize("name", ["cemetery", "airport apron", "grey building",
+                                  "residential", "park grass", "forest"])
+def test_land_uses_are_not_water(tmp_path, name):
+    """The regression that produced an unfilled Rookwood Cemetery.
+
+    A whole tile of one land-use colour must come back with NO water in it at all.
+    """
+    r = run(tmp_path, 32, 32, [], bg=CARTO[name])
+    assert r["water"] == 0, (
+        f"{name} rgb{CARTO[name]} classified as water: "
+        f"{r['water']} of {r['total']} px")
+
+
+def test_cemetery_differs_from_water_almost_only_in_blue(tmp_path):
+    """Why the old test failed, asserted so the reasoning cannot rot.
+
+    Cemetery #aacbaf has the SAME red as water and green within 8, so a metric that adds
+    the three channels together buries a 48-point miss in blue. Any replacement must stay
+    per-channel, or Rookwood comes back.
+    """
+    water, cem = CARTO["water"], CARTO["cemetery"]
+    assert water[0] == cem[0]
+    assert abs(water[1] - cem[1]) <= 8
+    assert abs(water[2] - cem[2]) >= 40
+    assert sum(abs(a - b) for a, b in zip(water, cem)) <= 60, (
+        "if this ever exceeds 60 the old test would have passed and this "
+        "test no longer describes the bug it was written for")
