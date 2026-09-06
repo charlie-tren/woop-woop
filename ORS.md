@@ -314,3 +314,55 @@ implied-speed estimate is exactly the sample size that produced the ferry mistak
 in the same week. The measurement is recorded so a calibration over a dozen real routes is
 cheap to do properly; a fudge factor picked from n=1 would be a guess wearing a number.
 Logged as its own TODO.
+
+## Calibrated against a second engine (06/09/2026) - and the answer is not a factor
+
+Charlie asked whether there is a more accurate way to know than inferring speed from
+isochrone geometry. There is, and it is cheap.
+
+**Method.** Sample points ON THE BOUNDARY of the openrouteservice 60 minute isochrone.
+The boundary is where ORS asserts exactly 60 minutes, so no banding and no assumptions
+are needed. Then ask a completely different engine how long the same origin-to-point trip
+takes. Valhalla's public instance is keyless, is a different codebase with a different
+road model, and answers `pedestrian`, `bicycle` and `auto`. 16 points per mode, spread by
+bearing around the ring, from Sydney CBD.
+
+**Result: how long a trip ORS calls 60 minutes really takes.**
+
+| mode | n | min | median | mean | max |
+|---|---|---|---|---|---|
+| foot | 16 | 0.80 | **1.15** | 1.12 | 1.46 |
+| bike | 16 | 0.55 | **1.17** | 1.09 | 1.41 |
+
+(car could not be measured in this run: the Worker returned 502 for the 60 minute driving
+isochrone. Repeat before drawing any conclusion about driving.)
+
+**Two findings, and the second one matters more.**
+
+1. **It is not a cycling problem.** Walking carries essentially the same bias as riding,
+   1.15 against 1.17. The earlier note here framed it as "cycling-regular is optimistic",
+   which was the wrong frame: whatever it is, it is not specific to the bike profile.
+   Charlie's measured 1.28 sits inside the range and above the median, so his single
+   observation was real and slightly worse than typical.
+
+2. **A scalar correction is the WRONG fix, and not for the reason previously given.**
+   The earlier note declined to fit a factor because n=1. Now n=32, and the reason to
+   decline is much better: the per-route spread, 0.55 to 1.46, is far larger than the
+   ~15% median bias. Multiplying every answer by 1.15 would fix the median and make most
+   individual answers worse in one direction or the other. There is no single number that
+   makes an isochrone tell the truth about a particular trip.
+
+**What the accurate version actually is.** Stop asking the isochrone to be accurate. Use
+it for what it is good at - shortlisting candidates cheaply from one call - and then ask a
+router for the real duration to the ONE point that wins. That converts a 15% median bias
+with a 90-point spread into an exact number for the trip actually being offered.
+
+Valhalla makes this practical in a way ORS does not:
+
+    OPTIONS https://valhalla1.openstreetmap.de/route
+    Access-Control-Allow-Origin: *
+    Access-Control-Allow-Methods: GET, POST, OPTIONS
+
+**Keyless and CORS-open, so the page can call it directly** - no API key to hide, no
+Worker in the path, and therefore no dependence on the Cloudflare deploy that is currently
+blocked. One request per answer, not per slider drag.
