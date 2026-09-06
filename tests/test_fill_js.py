@@ -140,23 +140,29 @@ CARTO = {
     "water":            (170, 211, 223),   # #aad3df, the thing we do want
     "water antialias":  (177, 201, 211),
     "pale water":       (178, 219, 218),
+    "halo water":       (196, 220, 231),   # water under a label's white halo
+    "halo water 2":     (219, 236, 241),
+    "halo water 3":     (213, 232, 234),
     "cemetery":         (170, 203, 175),   # #aacbaf - old sum distance 56
     "airport apron":    (187, 187, 204),   # old sum distance 60, exactly on it
     "grey building":    (212, 211, 211),   # old sum distance 54
     "residential":      (224, 223, 223),
     "park grass":       (205, 235, 176),
     "forest":           (173, 209, 158),
+    "white label":      (255, 255, 255),   # the halo itself, not the water under it
 }
 
 
-@pytest.mark.parametrize("name", ["water", "water antialias", "pale water"])
+@pytest.mark.parametrize("name", ["water", "water antialias", "pale water",
+                                  "halo water", "halo water 2", "halo water 3"])
 def test_water_shades_are_water(tmp_path, name):
     r = run(tmp_path, 32, 32, [], bg=CARTO[name])
     assert r["water"] == r["total"], f"{name} should classify as water"
 
 
 @pytest.mark.parametrize("name", ["cemetery", "airport apron", "grey building",
-                                  "residential", "park grass", "forest"])
+                                  "residential", "park grass", "forest",
+                                  "white label"])
 def test_land_uses_are_not_water(tmp_path, name):
     """The regression that produced an unfilled Rookwood Cemetery.
 
@@ -182,3 +188,18 @@ def test_cemetery_differs_from_water_almost_only_in_blue(tmp_path):
     assert sum(abs(a - b) for a, b in zip(water, cem)) <= 60, (
         "if this ever exceeds 60 the old test would have passed and this "
         "test no longer describes the bug it was written for")
+
+
+def test_pure_white_is_not_water_however_pale_the_water_rule_gets(tmp_path):
+    """The ceiling that makes the lightened-water rule safe.
+
+    Accepting water blended towards white is only sound while it stops short of white
+    itself: the map is full of white - label halos, paper background, building fill - and
+    a rule that reaches all the way would flood the fill with holes wherever there is
+    text. Water at f=1.0 IS white, so the ceiling sits below it.
+    """
+    r = run(tmp_path, 32, 32, [], bg=(255, 255, 255))
+    assert r["water"] == 0
+    # and one step back from white is still not water
+    r2 = run(tmp_path, 32, 32, [], bg=(250, 250, 251))
+    assert r2["water"] == 0
