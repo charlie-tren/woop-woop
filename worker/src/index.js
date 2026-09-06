@@ -38,7 +38,7 @@ const COORD_DP = 3;                       // ~110 m
 // so this bound only ever binds on foot and bike.
 const MAX_SECONDS = 5 * 3600;
 // Bump whenever the upstream request body changes, to retire cached geometry.
-const SHAPE = "s0";
+const SHAPE = "s0-noferry";
 
 function cors(origin) {
   const allow = ALLOWED.has(origin) ? origin : "https://charlietrenorden.com";
@@ -127,25 +127,45 @@ export default {
       // Redcliffe and the northern suburbs. That is the visible artefact, and it is
       // what this line targets.
       //
-      // Ferries were NOT a cause, contrary to the first version of this comment.
-      // Tested every ferry-only island around Brisbane - Dunwich and Point Lookout on
-      // North Stradbroke, Russell, Macleay - and the isochrone contained none of them,
-      // so avoiding them bought nothing measurable. Not kept as insurance either: the
-      // page hands the user Google Maps DRIVING directions, and those DO route over
-      // ferries, so suppressing them here would make the reachable set disagree with
-      // the directions offered for reaching it.
+      // Ferries ARE a cause. An earlier version of this comment said they were not,
+      // on the strength of Brisbane, where every ferry-only island tested fell outside
+      // the isochrone. Brisbane was the wrong city to generalise from, and Sydney is
+      // the one the page opens on.
+      //
+      // Measured 06/09/2026 on the LIVE 60 minute WALKING isochrone from Rushcutters
+      // Bay: Cremorne Point, Mosman Bay and Taronga Zoo wharves are all INSIDE it.
+      // Those are 9 to 12 km walks around the harbour. Only a ferry reaches them in an
+      // hour, and 31.9% of the polygon sat on water by the 250 m land mask.
+      //
+      // Suppressed for every profile, not just foot, because the isochrone answers
+      // "how far can I get in T minutes" and openrouteservice models a ferry as a link
+      // with a speed and NO timetable: you board the instant you arrive, and never
+      // wait. A twenty minute headway is invisible to it. That makes a ferry crossing
+      // an unfunded claim in a way an ordinary road is not, whatever the mode.
+      options: { avoid_features: ["ferries"] },
       smoothing: 0,
     };
 
-    const upstream = await fetch(`${UPSTREAM}/${profile}`, {
+    const call = (b) => fetch(`${UPSTREAM}/${profile}`, {
       method: "POST",
       headers: {
         "Authorization": env.ORS_KEY,
         "Content-Type": "application/json",
         "Accept": "application/geo+json",
       },
-      body: JSON.stringify(ask),
+      body: JSON.stringify(b),
     });
+
+    let upstream = await call(ask);
+    // The valid avoid_features set is documented per profile and differs between them.
+    // Rather than guess which ones accept "ferries", ask, and on a rejection retry
+    // without it: a 400 would otherwise take out a whole mode and send it silently back
+    // to the circle estimate, which is a worse answer than one that crosses a harbour.
+    if (upstream.status === 400) {
+      const plain = Object.assign({}, ask);
+      delete plain.options;
+      upstream = await call(plain);
+    }
 
     const text = await upstream.text();
     if (!upstream.ok) {

@@ -159,3 +159,42 @@ The lesson for next time is the one already in `feedback_independent-verificatio
 2 km mask came out of the same build as the peaks, and a figure quoted off it inherits
 its resolution. Ask what the instrument can resolve before quoting it to three
 significant figures.
+
+## Ferries, corrected again 06/09/2026 - they ARE the cause
+
+The section above concluded that ferries were not a cause and removed
+`avoid_features`. That conclusion was drawn from Brisbane alone and does not hold. It is
+reversed here, with the measurement that reverses it.
+
+Sydney is the city the page opens on, and Sydney has a ferry network across the middle of
+the answer. On the LIVE 60 minute **walking** isochrone from Rushcutters Bay:
+
+| point | walk from the origin | inside the isochrone |
+|---|---|---|
+| Cremorne Point wharf | ~9 km, around the bridge | **yes** |
+| Mosman Bay wharf | ~11 km | **yes** |
+| Taronga Zoo wharf | ~12 km | **yes** |
+| Kirribilli | ~5 km over the bridge | yes, legitimately |
+| Watsons Bay wharf | ~11 km | no |
+
+Three wharves that are a two to three hour walk away are inside a one hour walking
+isochrone. Only a ferry puts them there. **31.9% of that polygon sits on water**, measured
+against the 250 m land mask the page ships - an order of magnitude worse than the Brisbane
+figure that produced the wrong conclusion.
+
+`avoid_features: ["ferries"]` is back, for **every** profile rather than just foot. The
+reason is not that a ferry is cheating: it is that openrouteservice models a ferry as a
+link with a speed and **no timetable**. You board the instant you arrive and never wait,
+so a twenty minute headway is invisible to the isochrone. That makes a crossing an
+unfunded claim in a way an ordinary road is not, whatever the mode. The earlier argument
+for keeping ferries - that the page hands out Google Maps driving directions, which do
+route over them - is real but much weaker, and it only ever applied to driving.
+
+A 400 from upstream retries without the option, because the valid `avoid_features` set is
+documented per profile and a rejection would otherwise take out a whole mode.
+
+**The methodological point, which is the expensive part.** Brisbane was the wrong city to
+generalise from and nothing about the test said so. One city is one sample; a network
+feature that does not bind there can dominate somewhere else. Test the case the product
+actually opens on, and when a check comes back negative, ask what would have to be true
+for it to come back positive before concluding the mechanism is absent.
