@@ -246,3 +246,71 @@ browser: 768x512 at 31.7 m/px zoomed out, 1536x768 at 1.0 m/px zoomed in.
 The lesson worth keeping is not about canals. **Three plausible fixes were proposed and
 two were coded before anyone looked at a rendering of the thing being fixed.** The picture
 settled it in one glance and contradicted the metric.
+
+## The water colour test was catching whole land uses (06/09/2026)
+
+Charlie: "why is rookwood cemetery not coloured in when I select ride", "same question
+but for the airport", "there are just some random unhighlighted spots".
+
+One cause for all three. The classifier asked whether the SUM of the three channel
+differences from water `#aad3df` was within 60, and that treats a colour far off in one
+channel the same as one slightly off in all three:
+
+| OSM carto fill | rgb | sum distance | caught? |
+|---|---|---|---|
+| water `#aad3df` | 170,211,223 | 0 | yes, correctly |
+| **cemetery `#aacbaf`** | 170,203,175 | **56** | **yes, wrongly** |
+| **airport apron** | 187,187,204 | **60** | **yes, exactly on the line** |
+| **grey building** | 212,211,211 | **54** | **yes, wrongly** |
+
+Cemetery green has the SAME red as water and green within 8; the entire miss is 48 points
+of blue, which the sum buries. Measured on the real tile: 62,468 pixels of solid cemetery
+green over Rookwood, which is why the whole cemetery went unfilled. The neutral greys are
+also where most of the pixel speckle came from - 28,818 water components in one Alexandria
+window, nearly all one or two pixels.
+
+**Now every channel must be within 20 individually.** Share of pixels classified water,
+before and after:
+
+| place | sum <= 60 | per channel <= 20 |
+|---|---|---|
+| Rookwood Cemetery | 31.14% | **0.48%** |
+| Sydney Airport | 26.48% | 12.32% (it has the Cooks River and Botany Bay on it) |
+| Centennial Park | 8.56% | 5.30% (the ponds) |
+| Sydney Harbour | 79.64% | 77.58% |
+
+20 and not 25: at 25 the airport apron comes back. Cemetery is safe at any per-channel
+tolerance below 48, so it is not the binding constraint.
+
+**Known residual.** Tightening also rejects a grey-blue around 184,191,201 that appears
+over the harbour where a pattern is drawn on top of the water - the hatched naval area by
+Garden Island is the visible case, and it is the grey patch in Charlie's harbour
+screenshot. That is a pattern-over-water problem rather than a colour-distance one: the
+right fix is to fill land components fully enclosed by water, not to widen the tolerance,
+which would let the airport back in. Not built yet.
+
+## What cycling-regular actually assumes (06/09/2026)
+
+Charlie: "the riding one actually takes an hour 17 not an hour". Measured rather than
+assumed. Straight-line reach of the openrouteservice cycling bands from Sydney CBD:
+
+| band | max straight-line | implied km/h straight line |
+|---|---|---|
+| 15 min | 4.48 km | 17.9 |
+| 30 min | 8.80 km | 17.6 |
+| 45 min | 12.76 km | 17.0 |
+| 60 min | 16.78 km | 16.8 |
+
+A straight-line reach implies a HIGHER speed along the road, because roads bend. So
+cycling-regular is assuming somewhere north of 20 km/h sustained, with no lights, no
+traffic and no penalty for Sydney's hills. A realistic urban door-to-door average is about
+15 km/h on the road, which is roughly 11-12 km/h straight line.
+
+Two independent numbers that agree in direction and roughly in size: Charlie's 77 minutes
+against a claimed 60 is 1.28x, and the implied-speed gap is about 1.4x.
+
+**Deliberately NOT fitting a correction factor from this.** One route and one
+implied-speed estimate is exactly the sample size that produced the ferry mistake earlier
+in the same week. The measurement is recorded so a calibration over a dozen real routes is
+cheap to do properly; a fudge factor picked from n=1 would be a guess wearing a number.
+Logged as its own TODO.
