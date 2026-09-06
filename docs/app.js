@@ -233,6 +233,27 @@ const WATER_RGB = [170, 211, 223];
  * Cooks River and Botany Bay on it), Sydney Harbour 79.64% -> 77.58%.
  */
 const WATER_CH_TOL = 20;
+/* Water that has been LIGHTENED, which the per-channel test alone misses.
+ *
+ * Charlie, 06/09/2026: patches around the ponds in Centennial Park. The ponds were being
+ * caught in the middle and filled around the edges, and the missed pixels turned out to
+ * be #c4dce7, #dbecf1, #d5e8ea - water blended toward white. Two things do that: the
+ * white halo the map paints behind a label, which is why the patches sat over the words
+ * "Duck Pond" and "Busbys Pond", and the anti-aliased rim where a pond meets the park.
+ *
+ * Blending toward white moves each channel a FRACTION of its own distance to 255, so the
+ * test is that fraction: work out f per channel, and accept when all three agree. Pure
+ * white has f = 1 in every channel and is rejected by the ceiling, which matters because
+ * the map is full of white. A neutral grey has wildly disagreeing f (0.63, 0.27, 0.00 for
+ * #e0dfdf) and fails the spread.
+ *
+ * Verified against thirteen real carto colours: accepts water, its anti-aliasing, pale
+ * water and all three halo tints; rejects cemetery, airport apron, grey building,
+ * residential, park grass, forest and pure white.
+ */
+const WHITE_F_MAX = 0.80;
+const WHITE_F_SPREAD = 0.22;
+const WHITE_F_MIN = -0.10;
 const MAJORITY_K = 9;
 const MAX_TILES = 24;
 
@@ -263,9 +284,17 @@ function waterFromPixels(data, W, H) {
   const raw = new Uint8Array(W * H);
   const [wr, wg, wb] = WATER_RGB;
   const t = WATER_CH_TOL;
+  const dr = 255 - wr, dg = 255 - wg, db = 255 - wb;
   for (let i = 0, j = 0; i < raw.length; i++, j += 4) {
-    if (Math.abs(data[j] - wr) <= t && Math.abs(data[j + 1] - wg) <= t &&
-        Math.abs(data[j + 2] - wb) <= t) {
+    const r = data[j], g = data[j + 1], b = data[j + 2];
+    if (Math.abs(r - wr) <= t && Math.abs(g - wg) <= t && Math.abs(b - wb) <= t) {
+      raw[i] = 1;
+      continue;
+    }
+    // ...or the same colour lightened towards white by one common fraction.
+    const fr = (r - wr) / dr, fg = (g - wg) / dg, fb = (b - wb) / db;
+    const lo = Math.min(fr, fg, fb), hi = Math.max(fr, fg, fb);
+    if (lo >= WHITE_F_MIN && hi <= WHITE_F_MAX && hi - lo <= WHITE_F_SPREAD) {
       raw[i] = 1;
     }
   }
