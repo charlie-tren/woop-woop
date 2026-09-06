@@ -1,0 +1,79 @@
+name: Deploy Worker
+
+# The Worker deploy has been blocked for weeks on WHICH MACHINE it runs from, not on
+# the deploy itself. `npx wrangler deploy` uses whatever account the local wrangler
+# happens to be logged in as, and on the laptop that holds every clone that is
+# charlie.rochfordgroup@gmail.com, not charlie.tren. Deploying from there does not
+# fail - it creates a SECOND, secretless woop-woop-iso on the wrong account and leaves
+# the live one untouched, which is the worst possible outcome because it looks like it
+# worked. (Re-checked 06/09/2026: still the work account.)
+#
+# Running it here removes the machine from the question entirely. The token names the
+# account, so there is no wrong account to deploy to.
+#
+# NOT WIRED YET - it needs two repository secrets, Settings -> Secrets and variables ->
+# Actions:
+#   CLOUDFLARE_API_TOKEN   Cloudflare dashboard -> My Profile -> API Tokens ->
+#                          "Edit Cloudflare Workers". Scoped to Workers, nothing else.
+#   CLOUDFLARE_ACCOUNT_ID  the personal account's ID, on the dashboard's right rail.
+# Until both exist the job stops on the first step and says which one is missing,
+# rather than half-deploying.
+#
+# Manual only, on purpose. This is a live endpoint the page depends on, so it should be
+# a decision someone makes, not something a push does on the way past.
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      # Fail here, loudly, rather than letting wrangler fall back to something else and
+      # report success against an account nobody meant to touch.
+      - name: Check the secrets exist
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=""
+          [ -n "$TOKEN" ]   || missing="$missing CLOUDFLARE_API_TOKEN"
+          [ -n "$ACCOUNT" ] || missing="$missing CLOUDFLARE_ACCOUNT_ID"
+          if [ -n "$missing" ]; then
+            echo "Not deploying. Missing repository secret(s):$missing"
+            echo "Settings -> Secrets and variables -> Actions. See the comment at the"
+            echo "top of this file for where each one comes from."
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+
+      # Says out loud which account is about to be written to, so the run log answers
+      # the question that blocked this job in the first place.
+      - name: Whose account is this
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 whoami
+
+      # ORS_KEY is a Cloudflare-side secret and a code deploy does not touch it, so this
+      # does not need the key and must never be given it.
+      - name: Deploy
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 deploy
+
+      - name: What to check
+        run: |
+          echo "Load charlietrenorden.com/woop-woop/, set Walk / 60 min from Sydney."
+          echo "The shape must no longer reach Watsons Bay or Manly - 11km by road is"
+          echo "not a 60 minute walk, and reachability is a containment test against"
+          echo "that polygon, so an over-reaching hull hands out unreachable spots."
+          echo "Then check the 4-5 hour band returns a real answer instead of saying"
+          echo "the routing service will not work it out."
