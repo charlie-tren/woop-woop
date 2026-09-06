@@ -366,3 +366,23 @@ Valhalla makes this practical in a way ORS does not:
 **Keyless and CORS-open, so the page can call it directly** - no API key to hide, no
 Worker in the path, and therefore no dependence on the Cloudflare deploy that is currently
 blocked. One request per answer, not per slider drag.
+
+### Shipped 06/09/2026: the answer is routed before it is offered
+
+Not a correction factor, a route. The isochrone shortlists up to five candidates in
+remoteness order and each is routed for real until one fits the budget; the first that
+does becomes the answer, and its measured time replaces the band's on the card.
+
+- Valhalla, keyless, called straight from the page, so no key and no Worker.
+- One request per SETTLED answer, after the 600 ms isochrone debounce, never per slider
+  tick. Results cached on rounded coordinates.
+- Sequence number plus a `queryKey()` of mode, minutes, origin, walk-leg and band count,
+  so a reply that lands after the question changed is discarded instead of answering the
+  wrong question.
+- If none of the five fit, the best is still offered with a plain line saying what it
+  really takes. Silence would be the only wrong option.
+
+Measured live: walking gives "Walk there in 56 min, on real roads" where the band said
+"under 60"; riding gives "34 min ride ... then 360 m on foot, about 4 min ... 38 min all
+up". The band figure is now REPLACED rather than printed beside the real one - two
+competing times on one card makes the reader choose which to believe.

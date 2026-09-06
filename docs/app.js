@@ -78,6 +78,9 @@ const state = {
   bands: null,           // [{mins, rings}] innermost first, once fetched
   isoNote: "",           // why the real network is not being used, if it is not
   busy: false,
+  pick: null,            // the candidate a real route confirmed, once one has
+  pickKey: "",           // the question that pick was made for; see queryKey()
+  verifyNote: "",        // said aloud only when no candidate actually fitted
 };
 
 // The Worker holds the openrouteservice key. The page never sees it.
@@ -674,7 +677,7 @@ function scheduleFill() {
 }
 
 /* ---------- the query ---------- */
-function solve() {
+function solve(limit) {
   const m = MODES[state.mode];
   const mPerDegLat = 111320;
   const mPerDegLon = mPerDegLat * Math.cos((state.origin.lat * Math.PI) / 180);
@@ -685,6 +688,7 @@ function solve() {
   const toSpot = walksToSpot();
   const Q = activeSet();
 
+  const picked = limit ? [] : null;
   let nearest = null, nearestM = Infinity;
   for (let i = 0; i < Q.n; i++) {
     if (Q.c[i] !== want) continue;
@@ -720,13 +724,103 @@ function solve() {
       awayM: away, walkMins: walkMins, travelMins: travelMins,
       exact: !!bands, overBudget: false, access: { lat: alat, lon: alon },
     };
-    if (reachable) return hit;
+    if (reachable) {
+      if (!picked) return hit;
+      picked.push(hit);
+      if (picked.length >= limit) return picked;
+      continue;
+    }
     if (away < nearestM) {
       nearestM = away;
       nearest = Object.assign(hit, { overBudget: true });
     }
   }
-  return nearest;
+  return picked && picked.length ? picked : (picked ? [] : nearest);
+}
+
+/* ---------- checking the answer against a real route ---------- */
+/* The isochrone is a shortlist, not a timetable.
+ *
+ * Measured 06/09/2026 against Valhalla, sampling the BOUNDARY of the openrouteservice 60
+ * minute isochrone - where ORS asserts exactly 60 minutes by construction - a trip ORS
+ * calls an hour really takes a median of 1.15 walking and 1.17 riding. That is not a
+ * cycling quirk: both modes carry it.
+ *
+ * The reason there is no correction factor here is that the per-route spread, 0.55 to
+ * 1.46 over 32 samples, dwarfs the 15% median. Multiplying every answer by 1.15 would fix
+ * the median and make most individual answers worse in one direction or the other. No
+ * single number makes an isochrone true about a particular trip.
+ *
+ * So the isochrone does what it is good at - shortlisting cheaply from one call - and
+ * then the ONE point being offered is routed for real. Valhalla's public instance is
+ * keyless and sends Access-Control-Allow-Origin *, so the page calls it directly: no key
+ * to hide, no Worker in the path, and no dependence on a deploy.
+ */
+const VALHALLA_URL = "https://valhalla1.openstreetmap.de/route";
+const VALHALLA_COSTING = { foot: "pedestrian", bike: "bicycle", car: "auto" };
+const VERIFY_MAX = 5;          // candidates to route before giving up, worst case
+const realCache = new Map();
+
+async function realMinutes(costing, from, to) {
+  const key = costing + "|" + from.lat.toFixed(4) + "," + from.lon.toFixed(4) +
+              "|" + to.lat.toFixed(4) + "," + to.lon.toFixed(4);
+  if (realCache.has(key)) return realCache.get(key);
+  const q = { locations: [{ lat: from.lat, lon: from.lon },
+                          { lat: to.lat, lon: to.lon }], costing: costing };
+  const res = await fetch(VALHALLA_URL + "?json=" + encodeURIComponent(JSON.stringify(q)));
+  if (!res.ok) throw new Error("route");
+  const d = await res.json();
+  const mins = d.trip.summary.time / 60;
+  realCache.set(key, mins);
+  return mins;
+}
+
+/* Identifies the question being asked, so a reply that arrives after the question
+ * changed is discarded rather than answering the wrong one. */
+function queryKey() {
+  return [state.mode, state.mins, state.origin.lat.toFixed(4),
+          state.origin.lon.toFixed(4), state.walkLeg ? 1 : 0,
+          state.bands ? state.bands.length : 0].join("|");
+}
+
+let verifySeq = 0;
+
+async function verifyAnswer() {
+  if (!state.bands) return;                 // an estimate is already flagged as one
+  const key = queryKey();
+  const seq = ++verifySeq;
+  const cands = solve(VERIFY_MAX);
+  if (!cands || !cands.length) return;
+  const costing = VALHALLA_COSTING[state.mode];
+  const toSpot = walksToSpot();
+  let firstOver = null;
+
+  for (const c of cands) {
+    const target = toSpot ? { lat: c.lat, lon: c.lon } : c.access;
+    let ride;
+    try {
+      ride = await realMinutes(costing, state.origin, target);
+    } catch (e) {
+      continue;                             // this one cannot be routed; try the next
+    }
+    if (seq !== verifySeq || key !== queryKey()) return;   // question moved on
+    const total = ride + c.walkMins;
+    c.realMins = total;
+    if (total <= state.mins) {
+      state.pick = c; state.pickKey = key; state.verifyNote = "";
+      render();
+      return;
+    }
+    if (!firstOver) firstOver = c;
+  }
+  // Nothing in the shortlist actually fits. Offer the best of them and say so rather
+  // than silently presenting a trip that does not.
+  if (firstOver) {
+    state.pick = firstOver; state.pickKey = key;
+    state.verifyNote = "Checked against real roads: the closest this gets is about "
+      + fmtMins(firstOver.realMins) + ", which is over your " + fmtMins(state.mins) + ".";
+    render();
+  }
 }
 
 /* How long the trip to a point would actually take, in the chosen mode. */
@@ -742,7 +836,7 @@ function fmtMins(mins) {
 
 /* ---------- rendering ---------- */
 function render() {
-  const a = solve();
+  const a = (state.pick && state.pickKey === queryKey()) ? state.pick : solve();
   const box = $("#answer");
   $("#origin-ll").textContent =
     state.origin.lat.toFixed(3) + ", " + state.origin.lon.toFixed(3);
@@ -798,27 +892,41 @@ function render() {
       fmtKm(a.awayM) + "</b> away in a straight line.</p>"
     : "";
   const note = state.isoNote ? '<p class="over">' + state.isoNote + "</p>" : "";
+  const checked = state.verifyNote && state.pickKey === queryKey()
+    ? '<p class="over">' + state.verifyNote + "</p>" : "";
 
   // The trip, leg by leg. Walking routes to the spot itself; the wheeled modes stop
   // at the last built ground, and the rest is on foot whatever you came in.
   const legs = [];
   const Verb = m.verb.charAt(0).toUpperCase() + m.verb.slice(1);
+  // Once a real route has been run, its figure REPLACES the band's rather than sitting
+  // beside it. The band is an upper bound from whichever ring the point fell in, so
+  // printing both leaves two competing times on the card and makes the reader pick.
+  const real = a.realMins != null;
   if (walksToSpot()) {
-    legs.push("<li>" + (a.travelMins === null
-      ? Verb + " to <b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b>."
-      : Verb + " there in under <b>" + fmtMins(a.travelMins) + "</b>.")
+    legs.push("<li>" + (real
+      ? Verb + " there in <b>" + fmtMins(a.realMins) + "</b>, on real roads."
+      : a.travelMins === null
+        ? Verb + " to <b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b>."
+        : Verb + " there in under <b>" + fmtMins(a.travelMins) + "</b>.")
       + "</li>");
   } else {
-    const verb = a.travelMins === null
-      ? Verb : "Under <b>" + fmtMins(a.travelMins) + "</b> " + m.verb;
+    const rideMins = real ? a.realMins - a.walkMins : null;
+    const verb = real
+      ? "<b>" + fmtMins(rideMins) + "</b> " + m.verb
+      : a.travelMins === null
+        ? Verb : "Under <b>" + fmtMins(a.travelMins) + "</b> " + m.verb;
     legs.push("<li>" + verb + " to <b>" +
       a.access.lat.toFixed(4) + ", " + a.access.lon.toFixed(4) +
       "</b>, the last built ground.</li>");
     legs.push("<li>Then <b>" + fmtKm(a.dist_m) + "</b> on foot along the track, " +
       "about <b>" + fmtMins(a.walkMins) + "</b>.</li>");
+    if (real) {
+      legs.push("<li><b>" + fmtMins(a.realMins) + "</b> all up, on real roads.</li>");
+    }
   }
 
-  box.innerHTML = note + over +
+  box.innerHTML = note + checked + over +
     '<div class="big">' + fmtKm(a.dist_m) + " <span>" +
       (activeSet() === PD ? "from anything but roads" : "from anything") +
       "</span></div>" +
@@ -863,6 +971,10 @@ function setBusy(on) {
 let isoTimer = null, isoSeq = 0, fillSeq = 0;
 
 function refresh() {
+  // A pick belongs to the question it was made for; anything else is a stale answer.
+  if (state.pickKey !== queryKey()) {
+    state.pick = null; state.verifyNote = "";
+  }
   render();
   clearTimeout(isoTimer);
   // Per-profile ceiling. Only driving is capped at an hour; foot and bike go far
@@ -895,7 +1007,11 @@ function refresh() {
         : "No route could be worked out from here, so this is an estimate.";
     }
     setBusy(false);
+    state.pick = null; state.verifyNote = "";
     render();
+    // One request per settled answer, not per slider tick: this runs only after the
+    // isochrone debounce has already fired and the bands are in.
+    verifyAnswer().catch(() => {});
   }, 600);
 }
 
