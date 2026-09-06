@@ -198,3 +198,51 @@ generalise from and nothing about the test said so. One city is one sample; a ne
 feature that does not bind there can dominate somewhere else. Test the case the product
 actually opens on, and when a check comes back negative, ask what would have to be true
 for it to come back positive before concluding the mechanism is absent.
+
+## The canal, and a metric that nearly sent me the wrong way (06/09/2026)
+
+Charlie: "one minor issue i spotted though with the canal in alexandria". Part of
+Alexandria Canal was under the fill while the wide basin beside it was not.
+
+**The filter was not the cause.** The obvious suspect was the 9x9 majority pass, because
+it is symmetric: it cannot tell a 3 px ferry dash (thin LAND on water, remove) from a 3 px
+canal (thin WATER in land, keep). That is a genuine property of the operator and it looked
+like the answer. Two replacements were tried before the picture was looked at:
+
+| operator | canal | side effect |
+|---|---|---|
+| majority 9x9 | erased in principle | none |
+| closing 9x9 | kept | water 3.2% -> 13.9%, noise smeared into holes |
+| component area filter | ~same as majority | none |
+
+Then the render was actually inspected, and at z16 **the majority filter keeps the canal
+perfectly well**. All three operators score about the same on the metric I was tuning -
+"share of raw water kept", 30% - because that number is dominated by **28,818 water
+components of one or two pixels**, which are anti-aliasing noise around every pale feature
+on the map. The top five components hold 30% of the water pixels and everything else is
+speckle. I was optimising a number that barely moved with the thing I cared about, which
+is the failure `feedback_fit-the-outcome` describes, in a session that had already been
+bitten by it once.
+
+**The real cause is the zoom the fill is rendered at.** It was rendered ONCE, at a zoom
+chosen to fit the WHOLE isochrone inside 24 tiles, then stretched as you zoomed in. For a
+60 minute walk across Sydney the bbox is 0.095 x 0.081 degrees:
+
+| z | tiles | m/px |
+|---|---|---|
+| 16 | 324 | 2.0 |
+| 15 | 90 | 4.0 |
+| 14 | 25 | 7.9 |
+| **13** | **9** | **15.9  <- chosen** |
+
+Alexandria Canal is about 20 m wide, so it was roughly ONE pixel in the source tiles. No
+filter can preserve what the sampling never captured.
+
+**Fix: render the part of the isochrone that is on screen, at the zoom you are looking
+at**, and redraw on moveend, debounced 200 ms. The same 24 tile budget then buys detail
+where the eye is, instead of covering country off the edge of the map. Measured in the
+browser: 768x512 at 31.7 m/px zoomed out, 1536x768 at 1.0 m/px zoomed in.
+
+The lesson worth keeping is not about canals. **Three plausible fixes were proposed and
+two were coded before anyone looked at a rendering of the thing being fixed.** The picture
+settled it in one glance and contradicted the metric.

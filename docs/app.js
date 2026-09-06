@@ -280,9 +280,10 @@ function waterFromPixels(data, W, H) {
  * corners, which is exactly right: an image overlay stretches linearly between projected
  * corners, and Mercator tiles are linear in projected space. The 250 m painter samples on
  * a lat/lon grid instead and leans on Mercator being near-linear over a city. */
-async function paintLandFillFromTiles(rings, zoomHint) {
-  const bb = ringBounds(rings[0]);
-  let z = Math.max(10, Math.min(16, Math.round(zoomHint || 13)));
+async function paintLandFillFromTiles(rings, win, zoomHint) {
+  const bb = win;
+  if (!bb || bb.e <= bb.w || bb.n <= bb.s) return null;
+  let z = Math.max(9, Math.min(17, Math.round(zoomHint || 13)));
   let x0, x1, y0, y1;
   for (; z >= 9; z--) {
     x0 = Math.floor(lon2tx(bb.w, z)); x1 = Math.floor(lon2tx(bb.e, z));
@@ -564,6 +565,64 @@ function componentNear(lat, lon) {
   return best;
 }
 
+/* ---------- painting the fill for what is on screen ---------- */
+/* The fill used to be rendered ONCE, at a zoom chosen from the whole isochrone, and then
+ * stretched as you zoomed in. That capped its detail at the first render regardless of
+ * how close you got: a 60 minute walk across Sydney spans about 0.1 degrees, which fits
+ * in 24 tiles only at z13, or 15.9 metres per pixel. Alexandria Canal is roughly 20 m
+ * wide, so it was about ONE pixel in the source tiles and disappeared - which is exactly
+ * what Charlie saw, a canal covered by the fill while the wide basin beside it was not.
+ *
+ * So the window is now the part of the isochrone actually on screen, drawn at the zoom
+ * you are actually looking at. The tile budget then buys detail where you are looking
+ * instead of being spent covering country that is off the edge of the map, and the same
+ * 24 tiles give 2 m per pixel at z16.
+ */
+let fillRings = null, fillTimer = null;
+
+function fillWindow() {
+  if (!fillRings) return null;
+  const bb = ringBounds(fillRings[0]);
+  const v = map.getBounds().pad(0.15);   // a little past the edge, so a small pan is covered
+  const win = { s: Math.max(bb.s, v.getSouth()), w: Math.max(bb.w, v.getWest()),
+                n: Math.min(bb.n, v.getNorth()), e: Math.min(bb.e, v.getEast()) };
+  return (win.e > win.w && win.n > win.s) ? win : null;
+}
+
+function drawFill() {
+  if (!fillRings || !landBits) return;
+  const seq = ++fillSeq;
+  const win = fillWindow();
+  if (!win) {                       // the shape is off screen entirely
+    if (layers.fill) { map.removeLayer(layers.fill); layers.fill = null; }
+    return;
+  }
+  const show = (bounds) => {
+    if (seq !== fillSeq || !bounds || !fillURL) return true;
+    if (layers.fill) map.removeLayer(layers.fill);
+    layers.fill = L.imageOverlay(fillURL, bounds,
+      { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
+    return true;
+  };
+  // Basemap pixels first, the 250 m mask only if that cannot be done - offline, a tile
+  // that will not load, or a canvas the browser refuses to read back.
+  paintLandFillFromTiles(fillRings, win, map.getZoom())
+    .catch(() => null)
+    .then((bounds) => {
+      if (seq !== fillSeq) return;
+      if (bounds) { show(bounds); return; }
+      paintLandFill(fillRings, show);
+    });
+}
+
+/* Panning and zooming re-cut the window, so the fill is redrawn - debounced, because a
+ * drag fires moveend once but a pinch fires it repeatedly, and each redraw reads back a
+ * canvas of a few megapixels. */
+function scheduleFill() {
+  clearTimeout(fillTimer);
+  fillTimer = setTimeout(drawFill, 200);
+}
+
 /* ---------- the query ---------- */
 function solve() {
   const m = MODES[state.mode];
@@ -656,23 +715,8 @@ function render() {
         fill: !landBits, fillOpacity: 0.22, fillColor: "#c2451f",
         interactive: false }).addTo(map);
     if (landBits) {
-      const seq = ++fillSeq;
-      const show = (bounds) => {
-        if (seq !== fillSeq || !bounds || !fillURL) return true;
-        if (layers.fill) map.removeLayer(layers.fill);
-        layers.fill = L.imageOverlay(fillURL, bounds,
-          { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
-        return true;
-      };
-      // Basemap pixels first, the 250 m mask only if that cannot be done - offline, a
-      // tile that will not load, or a canvas the browser refuses to read back.
-      paintLandFillFromTiles(outer.rings, map.getZoom())
-        .catch(() => null)
-        .then((bounds) => {
-          if (seq !== fillSeq) return;
-          if (bounds) { show(bounds); return; }
-          paintLandFill(outer.rings, show);
-        });
+      fillRings = outer.rings;
+      drawFill();
     }
   }
   if (!a) {
@@ -829,6 +873,8 @@ function refresh() {
 
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
+
+  map.on("moveend", scheduleFill);
 
   map.on("click", (e) => {
     state.origin = { lat: e.latlng.lat, lon: e.latlng.lng };
