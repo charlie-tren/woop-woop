@@ -17,3 +17,8 @@ secrets/
 .env.*
 node_modules/
 .wrangler/
+
+# Screenshot leftovers from the shoot scripts. They sit in docs/data/ because that is
+# where the page reads from, but nothing references them and they are not part of the
+# payload - they just show up dirty at every wrap.
+docs/data/shot-*.png
