@@ -258,7 +258,7 @@ const WHITE_F_MAX = 0.80;
 const WHITE_F_SPREAD = 0.22;
 const WHITE_F_MIN = -0.10;
 const MAJORITY_K = 9;
-const MAX_TILES = 24;
+const MAX_TILES = 32;      // raised with the margin above, to hold the same detail
 
 const lon2tx = (lon, z) => ((lon + 180) / 360) * Math.pow(2, z);
 const lat2ty = (lat, z) => {
@@ -633,13 +633,25 @@ function componentNear(lat, lon) {
  */
 let fillRings = null, fillTimer = null;
 
-function fillWindow() {
+function fillWindow(padding) {
   if (!fillRings) return null;
   const bb = ringBounds(fillRings[0]);
-  const v = map.getBounds().pad(0.15);   // a little past the edge, so a small pan is covered
+  // Generous, because the cost of being too small is VISIBLE: the overlay ends in a
+  // straight line across the map. 0.25 covers an ordinary drag and most of a zoom step.
+  const v = map.getBounds().pad(padding == null ? 0.25 : padding);
   const win = { s: Math.max(bb.s, v.getSouth()), w: Math.max(bb.w, v.getWest()),
                 n: Math.min(bb.n, v.getNorth()), e: Math.min(bb.e, v.getEast()) };
   return (win.e > win.w && win.n > win.s) ? win : null;
+}
+
+/* The part of the screen the fill actually has to cover: the isochrone, cropped to the
+ * viewport. NOT the viewport - the image is clipped to the shape, so whenever the shape
+ * is smaller than the screen (which is most of the time) an image that covers everything
+ * it should still fails a naive "does it cover the view" test, and the fill would be
+ * thrown away the instant it was drawn. */
+function fillNeeded() {
+  const w = fillWindow(0);
+  return w ? L.latLngBounds([[w.s, w.w], [w.n, w.e]]) : null;
 }
 
 function drawFill() {
@@ -1040,7 +1052,23 @@ function refresh() {
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
 
-  map.on("moveend", scheduleFill);
+  // A fill that does not reach the edge of the screen ends in a STRAIGHT LINE, and along
+  // a coast that reads as the water boundary being in the wrong place - which is exactly
+  // what it looked like. The overlay is only correct where it was drawn, so the moment
+  // the view leaves the area it was drawn for, drop it and let the redraw put it back.
+  // A second without a fill is honest; a second with a rectangle drawn across the harbour
+  // is not.
+  const dropUncoveredFill = () => {
+    if (!layers.fill) return;
+    const need = fillNeeded();
+    if (!need || !layers.fill.getBounds().contains(need)) {
+      map.removeLayer(layers.fill);
+      layers.fill = null;
+    }
+  };
+  map.on("move", dropUncoveredFill);
+  map.on("zoomstart", dropUncoveredFill);
+  map.on("moveend", () => { dropUncoveredFill(); scheduleFill(); });
 
   map.on("click", (e) => {
     state.origin = { lat: e.latlng.lat, lon: e.latlng.lng };
