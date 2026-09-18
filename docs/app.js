@@ -38,15 +38,18 @@ const WALK_KMH = 5.0;
 
 /* Whether the vehicle reaches the answer itself, or stops short of it.
  *
- * Walking always reaches it: a peak sits on a track, path or footway by construction.
- * Driving never does - driving-car will not route down a footway - so the polygon has
- * to be tested against the ACCESS point and the remaining metres walked. Testing the
- * spot instead is what made a 60 minute drive take well over an hour.
+ * EVERY mode now reaches the answer itself, and there is no walked leg on a ride or a
+ * drive. Charlie, 18/09/2026: "with riding and driving there shouldn't be a walking
+ * component at all." The vehicle stops where the answer is or the answer does not
+ * qualify - a trip that ends in a 15 minute walk is not a drive, and splitting it into
+ * legs was describing the compromise rather than removing it.
  *
- * Unless the walk is switched off, in which case the whole question changes and so does
- * the peak file: see activeSet(). */
+ * That is only answerable because the drive-only peak file exists: its peaks sit ON a
+ * road by construction. Without it (older shipped data) the wheeled modes fall back to
+ * the walked-leg behaviour, which is wrong but honest, rather than claiming a spot the
+ * vehicle cannot reach. */
 function walksToSpot() {
-  return state.mode === "foot" || (!state.walkLeg && !!PD);
+  return state.mode === "foot" || !!PD;
 }
 
 /* Which peak file answers the current question.
@@ -58,7 +61,7 @@ function walksToSpot() {
  * road excluded from the measurement but required underfoot. The headline changes
  * wording with the file, because it is a different claim. */
 function activeSet() {
-  return state.mode !== "foot" && !state.walkLeg && PD ? PD : P;
+  return state.mode !== "foot" && PD ? PD : P;
 }
 
 // Per-PROFILE ceilings, not one global number. Measured against the live Worker on
@@ -74,7 +77,6 @@ const state = {
   // Sydney, not Brisbane. Changed 31/08/2026 - the homepage card is a picture of
   // whatever this opens on, and the site is written from Sydney.
   origin: { lat: -33.8688, lon: 151.2093 },
-  walkLeg: true,         // willing to walk the last stretch off the road network
   bands: null,           // [{mins, rings}] innermost first, once fetched
   isoNote: "",           // why the real network is not being used, if it is not
   busy: false,
@@ -258,7 +260,20 @@ const WHITE_F_MAX = 0.80;
 const WHITE_F_SPREAD = 0.22;
 const WHITE_F_MIN = -0.10;
 const MAJORITY_K = 9;
-const MAX_TILES = 32;      // raised with the margin above, to hold the same detail
+/* Enough tiles to paint the mosaic at the SCREEN's zoom, which is the whole point.
+ *
+ * The count a viewport needs is zoom-INDEPENDENT: a padded 880x700 pane is about 42
+ * tiles whatever the zoom, so a cap of 32 made the loop below step the mosaic DOWN a
+ * level at every zoom, not just deep ones. The fill was therefore always painted coarser
+ * than the map and stretched up - which is what Charlie saw on 18/09/2026 as blobby
+ * edges and salmon specks out on the water. An ink icon is a fixed 16 px, so at a mosaic
+ * zoom one step below the display it covers four times the ground and survives the
+ * majority pass as a visible blob.
+ *
+ * Matching the zoom also makes the fetches nearly free: they are the same tiles Leaflet
+ * has already loaded for the basemap, so they come from the browser cache. Stepping down
+ * a level fetched a whole extra zoom's worth of tiles that nothing else was using. */
+const MAX_TILES = 56;
 
 const lon2tx = (lon, z) => ((lon + 180) / 360) * Math.pow(2, z);
 const lat2ty = (lat, z) => {
@@ -636,22 +651,15 @@ let fillRings = null, fillTimer = null;
 function fillWindow(padding) {
   if (!fillRings) return null;
   const bb = ringBounds(fillRings[0]);
-  // Generous, because the cost of being too small is VISIBLE: the overlay ends in a
-  // straight line across the map. 0.25 covers an ordinary drag and most of a zoom step.
-  const v = map.getBounds().pad(padding == null ? 0.25 : padding);
+  // 0.12, down from 0.25. The margin was generous because the overlay used to be thrown
+  // away the moment it stopped covering, so falling short meant no fill at all. It is
+  // kept and replaced in place now, so a brief short edge during a drag is the cost, and
+  // the saving is what matters: 0.25 padding is 2.25x the viewport AREA, which is what
+  // pushed the tile count past the cap and forced the mosaic to a coarser zoom.
+  const v = map.getBounds().pad(padding == null ? 0.12 : padding);
   const win = { s: Math.max(bb.s, v.getSouth()), w: Math.max(bb.w, v.getWest()),
                 n: Math.min(bb.n, v.getNorth()), e: Math.min(bb.e, v.getEast()) };
   return (win.e > win.w && win.n > win.s) ? win : null;
-}
-
-/* The part of the screen the fill actually has to cover: the isochrone, cropped to the
- * viewport. NOT the viewport - the image is clipped to the shape, so whenever the shape
- * is smaller than the screen (which is most of the time) an image that covers everything
- * it should still fails a naive "does it cover the view" test, and the fill would be
- * thrown away the instant it was drawn. */
-function fillNeeded() {
-  const w = fillWindow(0);
-  return w ? L.latLngBounds([[w.s, w.w], [w.n, w.e]]) : null;
 }
 
 function drawFill() {
@@ -664,9 +672,17 @@ function drawFill() {
   }
   const show = (bounds) => {
     if (seq !== fillSeq || !bounds || !fillURL) return true;
-    if (layers.fill) map.removeLayer(layers.fill);
-    layers.fill = L.imageOverlay(fillURL, bounds,
-      { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
+    // REUSE the overlay rather than removing and re-adding it. remove+add swaps one
+    // <img> for another, and the gap between the two is a visible flicker on every
+    // redraw - which is most of what "glitchy when you zoom" was. setBounds/setUrl
+    // mutate the element already on the map, so there is no frame without a fill.
+    if (layers.fill) {
+      layers.fill.setBounds(bounds);
+      layers.fill.setUrl(fillURL);
+    } else {
+      layers.fill = L.imageOverlay(fillURL, bounds,
+        { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
+    }
     return true;
   };
   // Basemap pixels first, the 250 m mask only if that cannot be done - offline, a tile
@@ -791,7 +807,7 @@ async function realMinutes(costing, from, to) {
  * changed is discarded rather than answering the wrong one. */
 function queryKey() {
   return [state.mode, state.mins, state.origin.lat.toFixed(4),
-          state.origin.lon.toFixed(4), state.walkLeg ? 1 : 0,
+          state.origin.lon.toFixed(4),
           state.bands ? state.bands.length : 0].join("|");
 }
 
@@ -1052,23 +1068,21 @@ function refresh() {
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
 
-  // A fill that does not reach the edge of the screen ends in a STRAIGHT LINE, and along
-  // a coast that reads as the water boundary being in the wrong place - which is exactly
-  // what it looked like. The overlay is only correct where it was drawn, so the moment
-  // the view leaves the area it was drawn for, drop it and let the redraw put it back.
-  // A second without a fill is honest; a second with a rectangle drawn across the harbour
-  // is not.
-  const dropUncoveredFill = () => {
-    if (!layers.fill) return;
-    const need = fillNeeded();
-    if (!need || !layers.fill.getBounds().contains(need)) {
-      map.removeLayer(layers.fill);
-      layers.fill = null;
-    }
-  };
-  map.on("move", dropUncoveredFill);
-  map.on("zoomstart", dropUncoveredFill);
-  map.on("moveend", () => { dropUncoveredFill(); scheduleFill(); });
+  // The overlay is GEOREFERENCED, so a stale one is never in the wrong PLACE - it is
+  // only too small, and it ends in a straight line wherever it runs out. That line was
+  // judged worse than no fill at all, so this used to drop the overlay on every move and
+  // zoom and let the redraw put it back.
+  //
+  // Charlie, 18/09/2026: "a bit glitchy in the transition when you zoom in and out."
+  // That was the dropping. A zoom step out DOUBLES the view, so a 25% margin can never
+  // cover it and the fill blanked on every single zoom-out, then reappeared ~200 ms
+  // later. Two hundred milliseconds of a slightly short fill reads as the map catching
+  // up; two hundred milliseconds of no fill reads as a bug.
+  //
+  // So the stale overlay stays and the redraw replaces it in place. It is still dropped
+  // when the shape leaves the screen entirely, which drawFill handles.
+  map.on("moveend", scheduleFill);
+  map.on("zoomend", scheduleFill);
 
   map.on("click", (e) => {
     state.origin = { lat: e.latlng.lat, lon: e.latlng.lng };
@@ -1077,35 +1091,14 @@ function refresh() {
     refresh();
   });
 
-  // Walking already routes to the answer itself, so there is no last stretch to opt out
-  // of. This used to grey the control rather than hide it, on the reasoning that a
-  // control which comes and goes is harder to find than one that stays put. Charlie's
-  // call, 06/09/2026: "the last stretch shouldnt even be shown as an option for
-  // walking". A disabled checkbox still poses the question and still has to be read
-  // before you can dismiss it.
-  const walkleg = $("#walkleg");
-  const syncWalkLeg = () => {
-    const off = state.mode === "foot" || !PD;
-    walkleg.disabled = off;
-    const row = walkleg.closest("label");
-    if (row) row.hidden = off;
-  };
-
   document.querySelectorAll(".modes button").forEach((b) => {
     b.addEventListener("click", () => {
       state.mode = b.dataset.mode;
       document.querySelectorAll(".modes button").forEach((o) =>
         o.setAttribute("aria-pressed", String(o === b)));
-      syncWalkLeg();
       refresh();
     });
   });
-
-  walkleg.addEventListener("change", (e) => {
-    state.walkLeg = e.target.checked;
-    refresh();
-  });
-  syncWalkLeg();
 
   const mins = $("#mins");
   mins.addEventListener("input", () => {
