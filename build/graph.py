@@ -65,29 +65,118 @@ SPEEDS = {
     "bridleway":      {"bike": 8,  "foot": 4.5},
     "steps":          {"bike": 2,  "foot": 2},
 }
+# FITTED against routed times, 18/09/2026. build/fit_speeds.py, 57-59 pairs per mode
+# around Sydney, against the public Valhalla server - the same engine the page already
+# uses to verify its answers, so fitting to it makes the app self-consistent.
+#
+# Mean absolute relative error after fitting: foot 10.0%, bike 9.7%, car 8.2%.
+#
+# The multiplier applies to every class in its bucket. A bucket left at 1.00 is one where
+# the fit hit its bound, and a parameter at a bound is not an estimate - it means the fit
+# wanted to keep going and something else is wrong. Both cases here are offroad, which
+# few sampled routes used, so it is unidentified rather than measured and stays at base.
+#
+# What this corrected: walking was NOT too slow. The first calibration said the graph
+# reached half as many peaks on foot as ORS did, and I read that as a speed problem. The
+# fit puts walking multipliers at 1.02, 0.97 and 1.14 - 5 km/h was already 5 km/h. The
+# gap was the calibration script charging each peak a straight-line run in from its
+# nearest junction, because only 34% of peaks have a node of their own.
+FITTED = {
+    "foot": {"motorway": 1.00, "arterial": 1.02, "local": 0.97, "offroad": 1.14},
+    "bike": {"motorway": 1.00, "arterial": 1.24, "local": 1.22, "offroad": 1.00},
+    "car":  {"motorway": 1.09, "arterial": 1.02, "local": 1.02, "offroad": 1.00},
+}
+
+# Seconds spent at each junction crossed. Free-flow speeds with no stopping cost was the
+# single largest error in the first calibration; ORS.md had already recorded a fitted
+# AVERAGE of 22 km/h for driving against free-flow figures three to four times that, and
+# most of that gap is stopping rather than cruising slower.
+JUNCTION_PENALTY_S = {"foot": 0.2, "bike": 0.2, "car": 2.6}
+
+BUCKET = {
+    "motorway": ("motorway", "motorway_link", "trunk", "trunk_link"),
+    "arterial": ("primary", "primary_link", "secondary", "secondary_link"),
+    "local":    ("tertiary", "tertiary_link", "unclassified", "residential",
+                 "living_street", "service"),
+    "offroad":  ("pedestrian", "footway", "path", "track", "cycleway", "bridleway",
+                 "steps"),
+}
+BUCKET_OF = {c: b for b, cs in BUCKET.items() for c in cs}
+
+
+def _bucket_median(bucket, mode):
+    vals = [SPEEDS[c][mode] for c in BUCKET[bucket] if mode in SPEEDS[c]]
+    return float(np.median(vals)) if vals else 0.0
+
+
+def speed_kmh(cls_name, mode):
+    """The fitted speed for a class, or 0 if the mode may not use it.
+
+    The BUCKET MEDIAN times the multiplier, not the class's own base times the
+    multiplier. The multipliers were fitted against bucket medians, so applying them to
+    per-class values does not reproduce the model that was measured - it produced 109 km/h
+    on a motorway, above both the fitted 92 and the speed limit.
+
+    The cost is granularity: every class in a bucket now shares a speed, so residential
+    and tertiary are the same. The fit says that is affordable - for driving the bucket
+    model beat the per-class one outright, 10.4% against 40.1% before fitting, because
+    bucket medians sit closer to real speeds than free-flow class values do.
+    """
+    if mode not in SPEEDS[cls_name]:
+        return 0.0
+    b = BUCKET_OF[cls_name]
+    return _bucket_median(b, mode) * FITTED[mode][b]
+
+
 CLASSES = sorted(SPEEDS)
 CLASS_ID = {c: i for i, c in enumerate(CLASSES)}
 R = 6371000.0
 MPD = np.pi * R / 180.0          # metres per degree of latitude
 
 
+# How close a way vertex has to be to a peak to BE that peak's node.
+#
+# Every peak was snapped onto real way geometry by build/snap.py, so it sits on a vertex
+# or within a metre or two of one. Marking those vertices as junctions gives each peak a
+# node of its own, which is what makes reachability exact: without it a peak in the middle
+# of a long edge has no node and is charged to its nearest junction plus a straight-line
+# run in. On a fire trail that is the whole answer. Measured on the first calibration,
+# walking agreed with ORS on 50% of peaks and this was a large part of why.
+PEAK_SNAP_M = 15.0
+
+
 class RefCounter(osmium.SimpleHandler):
-    """Pass one: node references on routable ways, plus the endpoints."""
+    """Pass one: node refs on routable ways, their positions, and the endpoints.
+
+    Positions are collected here rather than in a third pass, so the peak test can be one
+    batched query over every vertex instead of 37 million single ones. Costs about 600 MB
+    of arrays, which is the cheaper end of that trade.
+    """
 
     def __init__(self):
         super().__init__()
         self.refs = []
+        self.lats = []
+        self.lons = []
         self.ends = []
         self.ways = 0
 
     def way(self, w):
         if w.tags.get("highway") not in SPEEDS:
             return
-        ids = [n.ref for n in w.nodes]
+        ids, la, lo = [], [], []
+        for n in w.nodes:
+            if not n.location.valid():
+                continue
+            ids.append(n.ref)
+            la.append(n.location.lat)
+            lo.append(n.location.lon)
         if len(ids) < 2:
             return
         self.ways += 1
         self.refs.append(np.array(ids, dtype=np.int64))
+        self.lats.append(np.array(la, dtype=np.float32))
+        self.lons.append(np.array(lo, dtype=np.float32))
         self.ends.append(ids[0])
         self.ends.append(ids[-1])
 
@@ -95,17 +184,34 @@ class RefCounter(osmium.SimpleHandler):
 def junctions(pbf):
     t0 = time.time()
     h = RefCounter()
-    h.apply_file(pbf)
+    h.apply_file(pbf, locations=True)
     refs = np.concatenate(h.refs)
+    vlat = np.concatenate(h.lats)
+    vlon = np.concatenate(h.lons)
     print(f"  pass 1: {h.ways:,} routable ways, {len(refs):,} node refs "
           f"({time.time() - t0:.0f}s)", flush=True)
     uniq, counts = np.unique(refs, return_counts=True)
     shared = uniq[counts >= 2]
     ends = np.unique(np.array(h.ends, dtype=np.int64))
-    junc = np.union1d(shared, ends)
+
+    # Every peak gets its own node, found with one batched nearest-neighbour query.
+    from scipy.spatial import cKDTree
+    import json
+    meta = json.load(open("docs/data/peaks.json"))
+    pbuf = np.fromfile("docs/data/peaks.bin", dtype=np.uint8)
+    pn, ps = meta["count"], meta["coord_scale"]
+    plat = np.frombuffer(pbuf, "<i4", pn, 0) / ps
+    plon = np.frombuffer(pbuf, "<i4", pn, 4 * pn) / ps
+    klon = MPD * np.cos(np.radians(float(plat.mean())))
+    tree = cKDTree(np.column_stack((plon * klon, plat * MPD)))
+    d, _ = tree.query(np.column_stack((vlon.astype(np.float64) * klon,
+                                       vlat.astype(np.float64) * MPD)), workers=-1)
+    onpeak = np.unique(refs[d <= PEAK_SNAP_M])
+
+    junc = np.union1d(np.union1d(shared, ends), onpeak)
     print(f"  {len(uniq):,} distinct nodes; {len(shared):,} used by 2+ ways, "
-          f"{len(ends):,} endpoints -> {len(junc):,} junctions "
-          f"({100 * len(junc) / len(uniq):.0f}% of nodes)")
+          f"{len(ends):,} endpoints, {len(onpeak):,} on peaks "
+          f"-> {len(junc):,} junctions ({100 * len(junc) / len(uniq):.0f}% of nodes)")
     return junc
 
 
