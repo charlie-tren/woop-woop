@@ -106,13 +106,22 @@ async function fetchIsochrone(origin, mode, mins) {
                            seconds: mins * 60 }),
   });
   if (!res.ok) {
-    // 429 is the daily quota; anything else out here is usually openrouteservice
-    // failing to route from a remote track, which the calibration hit 6 times in 108.
-    // 400 from the Worker is its own range guard, which is a DIFFERENT thing from a
-    // routing failure and reads wrong as one. It also fires whenever the page asks for
-    // longer than the deployed Worker allows, which is exactly the window between
-    // raising the slider here and deploying the Worker that permits it.
-    const err = new Error(res.status === 429 ? "quota"
+    // Three different failures, and telling them apart matters because the page prints
+    // the reason.
+    //
+    // QUOTA does not arrive as 429. openrouteservice answers a spent daily allowance
+    // with 403 and a body of {"error": "Quota exceeded"}, and the Worker passes
+    // anything that is not 429 through as 502 - so the page was calling an exhausted
+    // quota "no route could be worked out from here", which sends you looking for a
+    // problem with the start point. Found 18/09/2026 by exhausting it with test calls.
+    // The right fix is the Worker mapping it to 429, but that needs a deploy, and
+    // reading the body works without one.
+    //
+    // 400 is the Worker's own range guard, not a routing failure.
+    let body = "";
+    try { body = await res.text(); } catch (e) { body = ""; }
+    const spent = res.status === 429 || /quota/i.test(body);
+    const err = new Error(spent ? "quota"
       : res.status === 400 ? "range" : "route");
     err.code = res.status;
     throw err;
@@ -1069,6 +1078,23 @@ function refresh() {
   if (state.pickKey !== queryKey()) {
     state.pick = null; state.verifyNote = "";
   }
+  // THE SHAPE BELONGS TO A PLACE. Charlie, 18/09/2026: clicked a new start point well
+  // outside the shaded area and the shading did not move. It would have, 600 ms later
+  // once the debounce fired and the request came back - but until then render() was
+  // drawing the PREVIOUS origin's isochrone around a marker that had already moved,
+  // which is not a slow update, it is a wrong answer on screen.
+  //
+  // Dropped on a change of origin or MODE, since both make the old rings answer a
+  // different question. Not on the time slider: there the place and the network are the
+  // same and the shape only grows or shrinks, so holding the last one while the next
+  // arrives beats blinking on every tick of a drag.
+  const bandsFor = state.mode + "|" + state.origin.lat.toFixed(4) + "|"
+    + state.origin.lon.toFixed(4);
+  if (state.bandsFor !== bandsFor) {
+    state.bands = null;
+    state.bandsFor = bandsFor;
+    fillRings = null;
+  }
   render();
   clearTimeout(isoTimer);
   // Per-profile ceiling. Only driving is capped at an hour; foot and bike go far
@@ -1090,6 +1116,7 @@ function refresh() {
       const bands = await fetchBands(origin, mode, mins);
       if (seq !== isoSeq) return;        // a newer request has overtaken this one
       state.bands = bands;
+      state.bandsFor = mode + "|" + origin.lat.toFixed(4) + "|" + origin.lon.toFixed(4);
       state.isoNote = "";
     } catch (err) {
       if (seq !== isoSeq) return;
