@@ -94,22 +94,6 @@ def test_all_land_stays_land(tmp_path):
     assert r["water"] == 0
 
 
-def test_a_ferry_dash_over_water_is_erased(tmp_path):
-    """A 2 px line across open water is a route dash, not an isthmus."""
-    dashes = [[x, 20, x + 6, 22] for x in range(0, 60, 10)]
-    r = run(tmp_path, 60, 60, dashes)
-    assert r["water"] == r["total"], (
-        "dashes survived as land:\n" + "\n".join(r["grid"]))
-
-
-def test_a_label_over_water_is_erased(tmp_path):
-    """Scattered 3x5 blobs are lettering. Real land is not 15 px with gaps."""
-    letters = [[x, 30, x + 3, 35] for x in range(5, 50, 5)]
-    r = run(tmp_path, 60, 60, letters)
-    assert r["water"] == r["total"], (
-        "lettering survived as land:\n" + "\n".join(r["grid"]))
-
-
 def test_a_real_island_survives(tmp_path):
     """The filter must not be so aggressive that it eats genuine small land.
 
@@ -121,13 +105,49 @@ def test_a_real_island_survives(tmp_path):
     assert kept > 200, f"the island was eaten, only {kept} px survived"
 
 
-def test_dashes_beside_an_island_do_not_join_it(tmp_path):
-    """Both behaviours at once, which is the real harbour case."""
+
+# These three asserted the OPPOSITE until 18/09/2026: that a mark drawn over water was
+# erased, so the harbour came out uniformly unshaded. Charlie asked for the ferry routes
+# to read red again, which is how they looked before the mosaic began painting at the
+# screen's zoom. So a mark ON the water is TINTED now - it sits inside the reachable
+# shape and the fill covers it - while the water around it stays water. The majority
+# pass still fills a pond smaller than the filter and still keeps an anti-aliased
+# shoreline stable; what it no longer does is turn the map's own furniture into sea.
+
+def test_a_ferry_dash_over_water_is_tinted_not_erased(tmp_path):
+    """A route dash is drawn ON the harbour, so the fill covers it. The water does not."""
+    dashes = [[x, 20, x + 6, 22] for x in range(0, 60, 10)]
+    r = run(tmp_path, 60, 60, dashes)
+    rows = r["grid"]
+    assert rows[20][2] == "0", "the dash should be tinted, grid: " + repr(rows[20])
+    assert rows[20][8] == "1", "the gap between two dashes should stay water"
+    assert rows[40][30] == "1", "open water away from the dashes should stay water"
+    assert r["water"] > 0.9 * r["total"], "the dashes bled into the water around them"
+
+
+def test_a_label_over_water_is_tinted_not_erased(tmp_path):
+    """Lettering is furniture on the water and reads the same way as a dash."""
+    letters = [[x, 30, x + 3, 35] for x in range(5, 50, 5)]
+    r = run(tmp_path, 60, 60, letters)
+    rows = r["grid"]
+    assert rows[32][6] == "0", "the glyph should be tinted, grid: " + repr(rows[32])
+    assert rows[32][8] == "1", "the gap between two glyphs should stay water"
+    assert r["water"] > 0.9 * r["total"], "the lettering bled into the water"
+
+
+def test_dashes_beside_an_island_do_not_merge_into_it(tmp_path):
+    """Both behaviours at once, which is the real harbour case.
+
+    The point is no longer that the dashes vanish - it is that tinting them does not
+    weld them to the island, so the fill still reads as an island in a bay.
+    """
     land = [[20, 20, 40, 40]] + [[x, 50, x + 6, 52] for x in range(0, 60, 10)]
     r = run(tmp_path, 60, 60, land)
     rows = r["grid"]
-    assert all(c == "1" for c in rows[50]), "the dash row should be all water"
     assert rows[30][30] == "0", "the island centre should be land"
+    assert rows[50][2] == "0", "the dash should be tinted"
+    assert rows[50][8] == "1", "the gap between two dashes should stay water"
+    assert rows[45][30] == "1", "water between island and dashes should stay water"
 
 
 # --------------------------------------------------------------------------------

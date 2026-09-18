@@ -336,7 +336,17 @@ function waterFromPixels(data, W, H) {
       // Compare against the area actually sampled, so the edge of the mosaic is not
       // biased towards land just for having fewer neighbours.
       const area = (y1 - y0) * (x1 - x0);
-      if (tot * 2 >= area) out[y * W + x] = 1;
+      // WATER means water-coloured AND sitting in water. The majority alone erased the
+      // ferry dashes and the route labels, turning them into sea; Charlie, 18/09/2026,
+      // liked them tinted - they were red before the mosaic started painting at the
+      // screen's zoom, and he asked for that back. Requiring the pixel itself to be
+      // water leaves a mark drawn ON the harbour inside the fill, so the routes read red
+      // while the water stays blue.
+      //
+      // The majority is still doing work: it is what fills a pond smaller than the
+      // filter, and what stops an anti-aliased shoreline flickering between the two.
+      const i = y * W + x;
+      if (tot * 2 >= area && raw[i]) out[i] = 1;
     }
   }
   return out;
