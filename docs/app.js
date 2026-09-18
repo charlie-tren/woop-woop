@@ -387,8 +387,32 @@ async function paintLandFillFromTiles(rings, win, zoomHint) {
   const octx = off.getContext("2d");
   const id = octx.createImageData(W, H);
   const d = id.data;
-  for (let i = 0, j = 0; i < water.length; i++, j += 4) {
-    if (!water[i]) { d[j] = 0xc2; d[j + 1] = 0x45; d[j + 2] = 0x1f; d[j + 3] = 0x59; }
+  // FEATHER the mosaic's outer border.
+  //
+  // The mosaic only covers the viewport plus a small margin, so dragging past that
+  // margin exposes where it was cut - and a hard cut reads as a coastline in the wrong
+  // place, which is what "glitchy as I drag around" was. Ramping the alpha to zero over
+  // the last few pixels makes it fade out instead, which reads as the map still
+  // catching up.
+  //
+  // This only touches the rectangle's own boundary. Wherever the fill ends at the real
+  // shape boundary those pixels are outside the clip already, so the isochrone's own
+  // edge stays crisp.
+  const FEATHER = 26;
+  const cut = bb.cut || {};
+  const BIG = 1e9;   // a side the viewport did not cut is never treated as near an edge
+  for (let y = 0; y < H; y++) {
+    const dn = cut.n ? y : BIG, ds = cut.s ? H - 1 - y : BIG;
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (water[i]) continue;
+      const dw = cut.w ? x : BIG, de = cut.e ? W - 1 - x : BIG;
+      const edge = Math.min(dn, ds, dw, de);
+      const a8 = edge >= FEATHER ? 0x59 : Math.round(0x59 * (edge / FEATHER));
+      if (a8 <= 0) continue;
+      const j = i * 4;
+      d[j] = 0xc2; d[j + 1] = 0x45; d[j + 2] = 0x1f; d[j + 3] = a8;
+    }
   }
   octx.putImageData(id, 0, 0);
 
@@ -659,6 +683,12 @@ function fillWindow(padding) {
   const v = map.getBounds().pad(padding == null ? 0.12 : padding);
   const win = { s: Math.max(bb.s, v.getSouth()), w: Math.max(bb.w, v.getWest()),
                 n: Math.min(bb.n, v.getNorth()), e: Math.min(bb.e, v.getEast()) };
+  // WHICH SIDES THE VIEWPORT CUT, as opposed to sides that are the shape's own extent.
+  // Only a viewport cut is an artefact worth hiding: feathering a side where the mosaic
+  // ends because the SHAPE ends softens a real boundary, which was visible on the first
+  // attempt as the fill fading out around Rose Bay while the outline carried on.
+  win.cut = { s: v.getSouth() > bb.s, w: v.getWest() > bb.w,
+              n: v.getNorth() < bb.n, e: v.getEast() < bb.e };
   return (win.e > win.w && win.n > win.s) ? win : null;
 }
 
@@ -706,6 +736,32 @@ function scheduleFill() {
 }
 
 /* ---------- the query ---------- */
+/* Below this, the number is not a measurement and must not be offered as an answer.
+ *
+ * Charlie, 18/09/2026: an hour's walk from Balmain returned a spot at St Leonards
+ * captioned "100 m from anything", sitting beside the Gore Hill Freeway. Measured
+ * independently from the raw OSM segments, that point is 12.2 m from a road and 35 m
+ * from a building. The 100 m was wrong three ways at once, and all three are the same
+ * root cause - the field is a distance transform on a 100 m GRID:
+ *
+ *   - a cell is "occupied" if a feature passes anywhere through it, so the distance to
+ *     the nearest occupied CELL understates the distance to the feature by up to a cell
+ *     diagonal, 141 m;
+ *   - build/snap.py then moves the point up to 150 m onto real way geometry without
+ *     recomputing d. I wrote that decision, and justified it in a comment claiming the
+ *     move "stays inside that cell". 150 m does not stay inside a 100 m cell;
+ *   - and in a dense suburb everything is within a cell or two anyway, so the answer is
+ *     decided by quantisation rather than by emptiness.
+ *
+ * No amount of snapping or recomputing fixes that: you cannot measure 12 m on a 100 m
+ * grid. So the honest move is not to answer below the resolution of the instrument.
+ * 300 m is three cells, comfortably clear of the 141 m diagonal.
+ *
+ * A sub-floor peak is skipped ENTIRELY, not just as the winner - the "nearest is N
+ * minutes away" fallback has to name somewhere genuinely quiet, or it just points at a
+ * different verge. */
+const MIN_ANSWER_M = 300;
+
 function solve(limit) {
   const m = MODES[state.mode];
   const mPerDegLat = 111320;
@@ -724,6 +780,7 @@ function solve(limit) {
     const lat = Q.lat[i] / Q.s, lon = Q.lon[i] / Q.s;
     const alat = Q.alat[i] / Q.s, alon = Q.alon[i] / Q.s;
     const distM = Q.d[i] * Q.ds;
+    if (distM < MIN_ANSWER_M) continue;
     const dx = (lon - state.origin.lon) * mPerDegLon;
     const dy = (lat - state.origin.lat) * mPerDegLat;
     const away = Math.sqrt(dx * dx + dy * dy);
@@ -894,8 +951,9 @@ function render() {
   }
   if (!a) {
     box.className = "empty";
-    box.textContent = "Nothing in range. Try more time, or a start point in "
-      + "Australia - that is the extent of the map so far.";
+    box.textContent = "Nothing out here is more than " + MIN_ANSWER_M
+      + " m from a road or a building. Try more time, or a different way of getting "
+      + "there. The map covers Australia only.";
     return;
   }
 
@@ -916,9 +974,9 @@ function render() {
 
   box.className = "";
   const over = a.overBudget
-    ? '<p class="over">Nothing in range within ' + fmtMins(state.mins) + " " +
-      m.verb + " of here. The nearest is <b>" +
-      fmtKm(a.awayM) + "</b> away in a straight line.</p>"
+    ? '<p class="over">Nothing within ' + fmtMins(state.mins) + " " + m.verb +
+      " of here gets more than " + MIN_ANSWER_M + " m from a road or a building. " +
+      "The nearest that does is <b>" + fmtKm(a.awayM) + "</b> away.</p>"
     : "";
   const note = state.isoNote ? '<p class="over">' + state.isoNote + "</p>" : "";
   const checked = state.verifyNote && state.pickKey === queryKey()
