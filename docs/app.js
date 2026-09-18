@@ -679,6 +679,7 @@ function drawFill() {
     if (layers.fill) {
       layers.fill.setBounds(bounds);
       layers.fill.setUrl(fillURL);
+      layers.fill.setOpacity(1);
     } else {
       layers.fill = L.imageOverlay(fillURL, bounds,
         { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
@@ -1081,6 +1082,19 @@ function refresh() {
   //
   // So the stale overlay stays and the redraw replaces it in place. It is still dropped
   // when the shape leaves the screen entirely, which drawFill handles.
+  // Hide the fill for the duration of a zoom.
+  //
+  // Keeping it on screen turned out WORSE than dropping it, which is the opposite of
+  // what I expected. The overlay is clipped to the shape, so it is not a rectangle - but
+  // the basemap tiles for the new zoom have not arrived yet, and a shape-clipped fill
+  // drawn over missing tiles is a solid coloured slab hanging in space. Captured 120 ms
+  // into a two-step zoom-out: a thin band of tiles, and the fill covering most of the
+  // pane in dark red.
+  //
+  // Out instantly at zoomstart, back with a fade once the new mosaic is painted. Nothing
+  // is lost: the fill is meaningless mid-animation, because the map it describes is still
+  // in flight.
+  map.on("zoomstart", () => { if (layers.fill) layers.fill.setOpacity(0); });
   map.on("moveend", scheduleFill);
   map.on("zoomend", scheduleFill);
 

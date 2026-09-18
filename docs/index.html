@@ -55,7 +55,15 @@ header .tag{position:relative; top:-9px}
 header .home{margin-left:auto}
 header a{color:var(--muted); text-decoration:none}
 main{flex:1; display:flex; min-height:0}
-#map{flex:1; min-width:0; background:var(--bg); position:relative}
+/* The map's own background is the BASEMAP's water colour, not the page's. A tile that
+   has not arrived leaves a hole, and against the dark page that hole read as a black
+   void mid-zoom - the most visible part of "glitchy when you zoom". Against water-blue
+   it reads as unloaded map, which is what it is. */
+#map{flex:1; min-width:0; background:#aad3df; position:relative}
+/* The fill fades in rather than popping, and is hidden outright for the duration of a
+   zoom: the tiles under it lag, and a shape-clipped fill over missing tiles is a
+   coloured block floating on nothing. */
+.iso-fill{transition:opacity .16s ease-out}
 #map.busy::after{
   content:""; position:absolute; inset:0 0 auto 0; height:3px; z-index:500;
   background:linear-gradient(90deg,transparent,var(--accent),transparent);
