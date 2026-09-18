@@ -747,32 +747,20 @@ function scheduleFill() {
 }
 
 /* ---------- the query ---------- */
-/* Below this, the number is not a measurement and must not be offered as an answer.
+/* A note on what a small distance MEANS here, since the page shows it as a number.
  *
- * Charlie, 18/09/2026: an hour's walk from Balmain returned a spot at St Leonards
- * captioned "100 m from anything", sitting beside the Gore Hill Freeway. Measured
- * independently from the raw OSM segments, that point is 12.2 m from a road and 35 m
- * from a building. The 100 m was wrong three ways at once, and all three are the same
- * root cause - the field is a distance transform on a 100 m GRID:
+ * The field is a distance transform on a 100 m grid, and build/snap.py then moves each
+ * peak up to 150 m onto real path geometry without recomputing it. So anything under a
+ * few hundred metres carries roughly +-150 m, and in a dense suburb the figure is decided
+ * by quantisation rather than by emptiness. Measured 18/09/2026: a peak shipped as
+ * "100 m from anything" is 12.2 m from a road and 35 m from a building.
  *
- *   - a cell is "occupied" if a feature passes anywhere through it, so the distance to
- *     the nearest occupied CELL understates the distance to the feature by up to a cell
- *     diagonal, 141 m;
- *   - build/snap.py then moves the point up to 150 m onto real way geometry without
- *     recomputing d. I wrote that decision, and justified it in a comment claiming the
- *     move "stays inside that cell". 150 m does not stay inside a 100 m cell;
- *   - and in a dense suburb everything is within a cell or two anyway, so the answer is
- *     decided by quantisation rather than by emptiness.
- *
- * No amount of snapping or recomputing fixes that: you cannot measure 12 m on a 100 m
- * grid. So the honest move is not to answer below the resolution of the instrument.
- * 300 m is three cells, comfortably clear of the 141 m diagonal.
- *
- * A sub-floor peak is skipped ENTIRELY, not just as the winner - the "nearest is N
- * minutes away" fallback has to name somewhere genuinely quiet, or it just points at a
- * different verge. */
-const MIN_ANSWER_M = 300;
-
+ * I briefly refused to answer below 300 m on that basis. Charlie, 18/09/2026: "why can't
+ * it just show the most remote thing." Fair - the floor hid a true fact (the most remote
+ * thing within an hour's walk of Balmain is a footpath beside a road, because city
+ * footpaths run beside roads) behind a worse experience. It shows the most remote thing
+ * again. The real fix is recomputing d at the snapped point, which is logged.
+ */
 function solve(limit) {
   const m = MODES[state.mode];
   const mPerDegLat = 111320;
@@ -791,7 +779,6 @@ function solve(limit) {
     const lat = Q.lat[i] / Q.s, lon = Q.lon[i] / Q.s;
     const alat = Q.alat[i] / Q.s, alon = Q.alon[i] / Q.s;
     const distM = Q.d[i] * Q.ds;
-    if (distM < MIN_ANSWER_M) continue;
     const dx = (lon - state.origin.lon) * mPerDegLon;
     const dy = (lat - state.origin.lat) * mPerDegLat;
     const away = Math.sqrt(dx * dx + dy * dy);
@@ -962,9 +949,8 @@ function render() {
   }
   if (!a) {
     box.className = "empty";
-    box.textContent = "Nothing out here is more than " + MIN_ANSWER_M
-      + " m from a road or a building. Try more time, or a different way of getting "
-      + "there. The map covers Australia only.";
+    box.textContent = "Nothing in range. Try more time, or a start point in "
+      + "Australia - that is the extent of the map so far.";
     return;
   }
 
@@ -985,9 +971,8 @@ function render() {
 
   box.className = "";
   const over = a.overBudget
-    ? '<p class="over">Nothing within ' + fmtMins(state.mins) + " " + m.verb +
-      " of here gets more than " + MIN_ANSWER_M + " m from a road or a building. " +
-      "The nearest that does is <b>" + fmtKm(a.awayM) + "</b> away.</p>"
+    ? '<p class="over">Nothing in range within ' + fmtMins(state.mins) + " " +
+      m.verb + " of here. The nearest is <b>" + fmtKm(a.awayM) + "</b> away.</p>"
     : "";
   const note = state.isoNote ? '<p class="over">' + state.isoNote + "</p>" : "";
   const checked = state.verifyNote && state.pickKey === queryKey()
