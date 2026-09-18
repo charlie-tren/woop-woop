@@ -712,7 +712,8 @@ function drawFill() {
       layers.fill.setOpacity(1);
     } else {
       layers.fill = L.imageOverlay(fillURL, bounds,
-        { opacity: 1, interactive: false, className: "iso-fill" }).addTo(map);
+        { opacity: 1, interactive: false, className: "iso-fill",
+          pane: "isoFill" }).addTo(map);
     }
     return true;
   };
@@ -1027,9 +1028,19 @@ function render() {
         + '">walking directions to the spot</a></li>') +
     "</ul>";
 
-  layers.target = L.circleMarker([a.lat, a.lon], {
-    radius: 7, color: "#fff", weight: 2, fillColor: "#e2674a", fillOpacity: 1,
-  }).addTo(map).bindTooltip("Furthest from anything");
+  // Only mark a spot you can actually get to.
+  //
+  // With the answer floor in, a city query often has nothing in reach that clears it, and
+  // the card names the nearest that does - which can be kilometres outside the shape.
+  // Dropping a solid dot out there made the map contradict itself: Charlie read it
+  // straight, as "the dot is outside the red area". The card says where it is and how far;
+  // the map does not need to plant a flag on somewhere you were just told you cannot
+  // reach.
+  if (!a.overBudget) {
+    layers.target = L.circleMarker([a.lat, a.lon], {
+      radius: 7, color: "#fff", weight: 2, fillColor: "#e2674a", fillOpacity: 1,
+    }).addTo(map).bindTooltip("Furthest from anything");
+  }
 
   // The walked leg, drawn, so the part of the trip that is not on the road network is
   // visible rather than only stated.
@@ -1039,8 +1050,9 @@ function render() {
         interactive: false }).addTo(map);
   }
 
-  const view = L.latLngBounds([[a.lat, a.lon],
-                               [state.origin.lat, state.origin.lon]]);
+  const view = L.latLngBounds(
+    a.overBudget ? [[state.origin.lat, state.origin.lon]]
+                 : [[a.lat, a.lon], [state.origin.lat, state.origin.lon]]);
   if (layers.iso) view.extend(layers.iso.getBounds());
   map.fitBounds(view.pad(0.12), { animate: false });
 }
@@ -1123,6 +1135,15 @@ function refresh() {
   $("#satellite").addEventListener("change", (e) => {
     if (e.target.checked) sat.addTo(map); else map.removeLayer(sat);
   });
+
+  // The fill gets its OWN pane, below the overlay pane the outline draws into.
+  // Default order put the fill image second in overlayPane, so it covered the outline -
+  // a 2 px line under a 35% raster reads as a soft fade, not as a boundary, which is
+  // why Charlie saw "no outline" on 18/09/2026. The outline is the authoritative
+  // statement of what is in reach and belongs on top of the shading, not under it.
+  map.createPane("isoFill");
+  map.getPane("isoFill").style.zIndex = 390;      // overlayPane is 400
+  map.getPane("isoFill").style.pointerEvents = "none";
 
   layers.origin = L.marker([state.origin.lat, state.origin.lon],
     { title: "Start" }).addTo(map);
