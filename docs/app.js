@@ -955,6 +955,24 @@ function render() {
       fillRings = outer.rings;
       drawFill();
     }
+  } else {
+    // NO BANDS, so the reachability test fell back to the estimated radius - and until
+    // now nothing was drawn at all. Charlie, 18/09/2026: "now the red outline isnt
+    // showing at all", after the day's routing quota ran out and every query fell back.
+    // The map went blank at exactly the moment it had least to say for itself.
+    //
+    // Draw what the fallback actually used: a circle of that radius. DASHED, and with no
+    // fill, so it cannot be mistaken for the routed shape - the measured difference is
+    // large, a real reachable set being two to seven times less circular than a disc,
+    // and the card says it is an estimate in words as well.
+    const mm = MODES[state.mode];
+    const r = mm.kmh * 1000 * (state.mins / 60) * mm.detour;
+    if (r > 0) {
+      layers.iso = L.circle([state.origin.lat, state.origin.lon], {
+        radius: r, color: "#e2674a", weight: 2, opacity: 0.9, dashArray: "6 5",
+        fill: false, interactive: false,
+      }).addTo(map);
+    }
   }
   if (!a) {
     box.className = "empty";
