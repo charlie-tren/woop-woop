@@ -58,8 +58,12 @@ BUCKETS = {
     "arterial": ("primary", "primary_link", "secondary", "secondary_link"),
     "local":    ("tertiary", "tertiary_link", "unclassified", "residential",
                  "living_street", "service"),
-    "offroad":  ("pedestrian", "footway", "path", "track", "cycleway", "bridleway",
-                 "steps"),
+    # Split out of one "offroad" bucket on 21/09/2026. Lumped together, the median was
+    # 8 km/h, so a bicycle on a CYCLEWAY was as slow as one on steps - and the bucket's
+    # multiplier hit its bound for bike and car, meaning the fit wanted it faster and
+    # could not get there. A parameter at a bound is not an estimate.
+    "cycleish": ("cycleway", "path", "track"),
+    "footonly": ("pedestrian", "footway", "bridleway", "steps"),
 }
 BNAMES = list(BUCKETS)
 BUCKET_OF = {}
@@ -232,12 +236,31 @@ def main(per_mode=40):
         after = np.abs(resid(fit.x))
         perclass = np.abs((np.array(raw) - y) / y)
         print(f"  {len(y)} pairs against routed times")
-        print(f"  mean |relative error|, bucket model: {before.mean()*100:5.1f}% "
-              f"unfitted -> {after.mean()*100:5.1f}% fitted")
+        # RMS is what least_squares actually minimises. Reporting only the MEAN
+        # absolute error made a fit look like it had made things worse, twice - the
+        # objective had fallen and the statistic I printed had not. Print both.
+        rms = lambda v: float(np.sqrt((v ** 2).mean()))
+        print(f"  relative error, bucket model: RMS {rms(before)*100:5.1f}% -> "
+              f"{rms(after)*100:5.1f}% (the fitted objective), "
+              f"mean abs {before.mean()*100:5.1f}% -> {after.mean()*100:5.1f}%")
         print(f"  (the per-class model, for reference: {perclass.mean()*100:5.1f}%)")
-        for bn, m0, mu in zip(BNAMES, base_spd, mult):
+        # Coverage and bounds, printed because BOTH have silently corrupted a paste.
+        # A multiplier is only an estimate if the fit could see the bucket: one sitting on
+        # a bound means the fit wanted to keep going, and one carrying a sliver of the
+        # sampled distance was never measured at all. Sydney inside 60 km has almost no
+        # tracks, so car/cycleish ran to its bound on noise - and that bucket is exactly
+        # the one that decides an outback answer. HOLD says paste 1.00, not the number.
+        share = A[:, :len(BNAMES)].sum(axis=0)
+        share = share / max(share.sum(), 1.0)
+        used = (A[:, :len(BNAMES)] > 0).sum(axis=0)
+        for bi, (bn, m0, mu) in enumerate(zip(BNAMES, base_spd, mult)):
+            atb = abs(np.log(mu) - lo_b[bi]) < 1e-3 or abs(np.log(mu) - hi_b[bi]) < 1e-3
+            thin = share[bi] < 0.02 or used[bi] < 5
+            flag = "  HOLD AT 1.00 - at a bound" if atb else (
+                   "  HOLD AT 1.00 - too little in sample" if thin else "")
             print(f"    {bn:9} base {m0*3.6:5.1f} km/h  x{mu:5.2f}  "
-                  f"-> {m0*3.6*mu:5.1f} km/h")
+                  f"-> {m0*3.6*mu:5.1f} km/h   {share[bi]*100:4.1f}% of metres, "
+                  f"{used[bi]:2} pairs{flag}")
         print(f"    junction penalty: {pen:.1f} s each")
 
 
