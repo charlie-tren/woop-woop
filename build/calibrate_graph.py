@@ -14,12 +14,20 @@ Two measurements, the second mattering far more than the first:
 
     python build/calibrate_graph.py
 
-A KNOWN APPROXIMATION, flagged because it moves the result: the graph keeps junctions and
-throws away the geometry between them, so a peak in the middle of a long edge has no node
-of its own. Its cost is taken as its nearest junction plus the straight-line run in. On a
-fire trail kilometres long that is wrong, and the fix is a build step giving each peak an
-edge and an offset along it - tiny data, and it removes the problem rather than bounding
-it. Read any disagreement below with that in mind before blaming the speed model.
+A KNOWN APPROXIMATION, and it is now MEASURED rather than flagged: the graph keeps
+junctions and throws away the geometry between them, so a peak in the middle of a long
+edge has no node of its own. Its cost is taken as its nearest junction plus the
+straight-line run in. build/check_peak_nodes.py puts exact-cost coverage at 26.6% and the
+median peak 590 m from a node, so the run-in is not an edge case, it is the common case.
+
+What that does to each mode is the thing to read before blaming the speed model, and it
+is not uniform: at p90 the run-in is 34 minutes on foot against a 60 minute budget, and
+under 2 minutes by car. So the driving comparison below is about the speed model and the
+walking one is mostly about the approximation. The header prints both so the table cannot
+be read without them.
+
+The fix is a build step giving each peak an edge and an offset along it - tiny data, and
+it removes the problem rather than bounding it.
 """
 import json
 import sys
@@ -78,6 +86,21 @@ def inside_ring(plat, plon, ring):
 
 
 def main():
+    # Printed first, deliberately. A table of agreement percentages looks like a verdict
+    # on the speed model, and for foot it is mostly a verdict on the run-in. Refusing to
+    # print the table would be worse - the numbers are still worth seeing - so the caveat
+    # goes ABOVE them where it cannot be scrolled past.
+    from check_peak_nodes import load_peaks
+    gq = np.load("data/au/graph.npz")
+    qlat, qlon = load_peaks()
+    kq = KLAT * np.cos(np.radians(float(qlat.mean())))
+    dq, _ = cKDTree(np.column_stack((gq["lon"] * kq, gq["lat"] * KLAT))).query(
+        np.column_stack((qlon * kq, qlat * KLAT)), workers=-1)
+    print(f"peak costing: {(dq <= 15).mean() * 100:.1f}% of peaks have a node of their "
+          f"own; the rest are charged")
+    print(f"  a straight-line run in, median {np.median(dq):.0f} m, p90 "
+          f"{np.percentile(dq, 90):.0f} m.")
+
     g = np.load("data/au/graph.npz")
     lat, lon = g["lat"], g["lon"]
     a, b, cls = g["a"], g["b"], g["cls"]
