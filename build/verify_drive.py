@@ -11,7 +11,7 @@ So this recomputes from the raw bucketed vertices, point-to-SEGMENT rather than
 point-to-vertex (power line spans are kilometres long, and vertex-only would overstate
 every one), gathering every chunk within a radius far beyond the answer.
 
-    python build/verify_drive.py [n]
+    python build/verify_drive.py [n] [drive|bike|walk]
 """
 import json, sys, numpy as np
 sys.path.insert(0, "build")
@@ -45,8 +45,15 @@ def seg_dist_m(plat, plon, lat, lon, off, kind, want):
 
 def main(n=10, which="drive"):
     meta = json.load(open("docs/data/peaks.json"))
-    if which == "drive":
-        d, want_set, path = meta["drive"], BUILT, "docs/data/peaks-drive.bin"
+    # Any VEHICLE set named in the manifest verifies the same way - the file and the
+    # measured-to set both come from the manifest, so a fourth set needs no code here.
+    # Before this, adding the bike set would have shipped an unverified peak file, which
+    # is how the 28% overstated drive headline got out.
+    if which in ("drive", "bike"):
+        d = meta.get(which)
+        if not d:
+            raise SystemExit(f"no {which!r} set in docs/data/peaks.json")
+        want_set, path = BUILT, "docs/data/" + d["file"]
     else:
         d = {"count": meta["count"], "measured_to": sorted(ANYTHING)}
         want_set, path = ANYTHING, "docs/data/peaks.bin"
