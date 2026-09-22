@@ -30,7 +30,9 @@ graph.py: read them, sanity-check them against what a car actually does, and pas
 in deliberately.
 
 Politeness: the Valhalla instance is a community server run by the OSM project. Requests
-are serialised with a delay, and the sample is deliberately small.
+are serialised with a delay, and the sample is deliberately small. The per-mode budget is
+SPLIT across the sampling centres rather than multiplied by them, so adding outback
+centres on 22/09/2026 did not increase the load on it.
 """
 import json
 import sys
@@ -167,39 +169,67 @@ def sample_pairs(sub, n, min_km, max_km, rng):
     return out
 
 
+# Sampling centres. Sydney alone was the whole sample until 22/09/2026, and this app
+# answers about the outback - so the bucket that decides a remote answer, `cycleish`, had
+# almost no observations and its multiplier ran to a bound for bike and car. A fitted
+# parameter carries the conditions it was fitted in.
+#
+# The three added centres are chosen for what their road networks are MADE of rather than
+# for spread: Alice Springs for unsealed desert tracks, Mount Isa for the Queensland
+# mining-road network, Kalgoorlie for the WA goldfields. Between them the sample now
+# contains the surfaces the answers actually sit on.
+#
+# Radii are larger than Sydney's because the network is sparser - a 12 km circle round
+# Alice Springs contains a town and very little else.
+CENTRES = (
+    ("Sydney",        (-33.8688, 151.2093), 1.0),
+    ("Alice Springs", (-23.6980, 133.8807), 2.0),
+    ("Mount Isa",     (-20.7256, 139.4927), 2.0),
+    ("Kalgoorlie",    (-30.7490, 121.4660), 2.0),
+)
+
+
 def main(per_mode=40):
     g = np.load("data/au/graph.npz")
     rng = np.random.default_rng(7)
     print(f"buckets: {', '.join(BNAMES)}")
-    for mode, centre, radius, lo, hi in (
-            ("foot", (-33.8688, 151.2093), 12000, 0.5, 5),
-            ("bike", (-33.8688, 151.2093), 30000, 1, 15),
-            ("car",  (-33.8688, 151.2093), 60000, 3, 40)):
-        sub = mode_graph(g, mode, centre, radius)
-        if sub is None:
-            print(f"\n=== {mode} === no graph")
-            continue
-        mat = build_matrix(sub)
-        pairs = sample_pairs(sub, per_mode, lo, hi, rng)
+    print(f"centres: {', '.join(c[0] for c in CENTRES)}")
+    # Split the budget across centres so the total request count to a community server
+    # does not multiply by four.
+    per_centre = max(8, per_mode // len(CENTRES))
+    for mode, radius, lo, hi in (
+            ("foot", 12000, 0.5, 5),
+            ("bike", 30000, 1, 15),
+            ("car",  60000, 3, 40)):
         rows, target, raw = [], [], []
-        print(f"\n=== {mode} ===  {sub['n']:,} nodes, sampling {len(pairs)} pairs")
-        for (i, j) in pairs:
-            r = shortest(sub, mat, i, j)
-            if r is None:
+        print(f"\n=== {mode} ===")
+        for name, centre, rscale in CENTRES:
+            sub = mode_graph(g, mode, centre, radius * rscale)
+            if sub is None:
+                print(f"  {name:14} no graph in range")
                 continue
-            metres, hops, mine = r
-            try:
-                truth = routed_minutes(mode, (sub["lat"][i], sub["lon"][i]),
-                                       (sub["lat"][j], sub["lon"][j]))
-            except (urllib.error.URLError, KeyError, TimeoutError):
+            mat = build_matrix(sub)
+            pairs = sample_pairs(sub, per_centre, lo, hi, rng)
+            got = 0
+            for (i, j) in pairs:
+                r = shortest(sub, mat, i, j)
+                if r is None:
+                    continue
+                metres, hops, mine = r
+                try:
+                    truth = routed_minutes(mode, (sub["lat"][i], sub["lon"][i]),
+                                           (sub["lat"][j], sub["lon"][j]))
+                except (urllib.error.URLError, KeyError, TimeoutError):
+                    time.sleep(DELAY_S)
+                    continue
                 time.sleep(DELAY_S)
-                continue
-            time.sleep(DELAY_S)
-            if truth <= 0.5:
-                continue
-            rows.append(np.concatenate([metres, [hops]]))
-            target.append(truth)
-            raw.append(mine)
+                if truth <= 0.5:
+                    continue
+                rows.append(np.concatenate([metres, [hops]]))
+                target.append(truth)
+                raw.append(mine)
+                got += 1
+            print(f"  {name:14} {sub['n']:>9,} nodes, {got:>3} usable pairs", flush=True)
         if len(rows) < 8:
             print(f"  only {len(rows)} usable pairs, not enough to fit")
             continue
@@ -223,7 +253,19 @@ def main(per_mode=40):
         # Valhalla's into the speed table, which is not what the speed table means.
         p0 = np.zeros(len(BNAMES) + 1)
         p0[-1] = np.log(2.0)
-        lo_b = np.concatenate([np.full(len(BNAMES), np.log(0.55)), [np.log(0.2)]])
+        # ASYMMETRIC, and deliberately so as of 22/09/2026. The band was [0.55, 1.45]
+        # both ways, chosen when every sampled pair was metropolitan and a wild value
+        # therefore meant noise. Adding outback centres showed the lower bound was the
+        # binding one and was wrong: car on `cycleish` ran straight to 0.55, having run
+        # to 1.45 on the Sydney-only sample. A parameter at a bound with NO data is
+        # noise; at a bound WITH real coverage - 10% of sampled metres over 23 pairs -
+        # it means the bound is the thing that is wrong.
+        #
+        # 0.30 downward is physical: the bucket median for cycleish comes from cycleway
+        # and path defaults, and a car on an unsealed desert track genuinely does a third
+        # of that. The upper bound stays at 1.45, because nothing should be HALF AGAIN
+        # faster than its own bucket median without that being a modelling error.
+        lo_b = np.concatenate([np.full(len(BNAMES), np.log(0.30)), [np.log(0.2)]])
         hi_b = np.concatenate([np.full(len(BNAMES), np.log(1.45)), [np.log(25.0)]])
         fit = least_squares(resid, p0, bounds=(lo_b, hi_b), method="trf")
         mult = np.exp(fit.x[:len(BNAMES)])

@@ -65,14 +65,31 @@ SPEEDS = {
     "bridleway":      {"bike": 8,  "foot": 4.5},
     "steps":          {"bike": 2,  "foot": 2},
 }
-# FITTED against routed times, refit 21/09/2026. build/fit_speeds.py, 47-49 pairs per
-# mode
+# FITTED against routed times, refit 22/09/2026. build/fit_speeds.py, 48-60 pairs per
+# mode drawn from FOUR centres - Sydney, Alice Springs, Mount Isa, Kalgoorlie
 # around Sydney, against the public Valhalla server - the same engine the page already
 # uses to verify its answers, so fitting to it makes the app self-consistent.
 #
-# Mean absolute relative error after fitting: foot 11.6%, bike 8.0%, car 6.3%. Foot is
-# the one mode where the per-class table was already better than the fit (9.9%), because
-# a pedestrian does 5 km/h on everything and bucketing can only lose information.
+# Mean absolute relative error after fitting: foot 9.7%, bike 13.2%, car 13.3%. Those are
+# WORSE than the 11.6/8.0/6.3 of the Sydney-only fit, and that is the point - the earlier
+# numbers were a model scored against the conditions it was fitted in. A sample containing
+# desert tracks is harder to fit and describes the answers this app actually gives.
+#
+# Foot remains the one mode where the unbucketed per-class table beats the fit (8.9%),
+# because a pedestrian does about 5 km/h on everything and bucketing can only lose
+# information there.
+#
+# WHAT THE OUTBACK SAMPLE CHANGED, and it is not a rounding difference. On the Sydney-only
+# sample `cycleish` for CAR ran to its upper bound of 1.45 - a car at 36 km/h on a fire
+# trail - on almost no observations, so it was held at 1.00, i.e. 25 km/h. With real
+# tracks in the sample it runs the other way entirely: 0.52, or 13 km/h, on 10% of sampled
+# metres over 23 pairs and comfortably inside the widened bound. Holding it at 25 km/h had
+# been OVERSTATING how far a car gets on remote tracks, which is the single bucket that
+# decides this product's answers.
+#
+# Two multipliers are still at a bound and so are held at 1.00 rather than pasted:
+# foot/arterial (the fit wants a pedestrian at 7.2 km/h on a primary road) and
+# bike/footonly (0.3% of sampled metres - unidentified, not measured).
 #
 # The multiplier applies to every class in its bucket. A bucket left at 1.00 is one where
 # the fit hit its bound, and a parameter at a bound is not an estimate - it means the fit
@@ -85,19 +102,22 @@ SPEEDS = {
 # gap was the calibration script charging each peak a straight-line run in from its
 # nearest junction, because only 34% of peaks have a node of their own.
 FITTED = {
-    "foot": {"motorway": 1.00, "arterial": 1.02, "local": 0.96,
-             "cycleish": 0.91, "footonly": 1.19},
-    "bike": {"motorway": 1.00, "arterial": 1.15, "local": 1.10,
-             "cycleish": 1.00, "footonly": 1.00},
-    "car":  {"motorway": 1.15, "arterial": 1.10, "local": 0.84,
-             "cycleish": 1.00, "footonly": 1.00},
+    "foot": {"motorway": 1.00, "arterial": 1.00, "local": 1.11,
+             "cycleish": 1.37, "footonly": 1.08},
+    "bike": {"motorway": 1.00, "arterial": 1.23, "local": 1.09,
+             "cycleish": 1.19, "footonly": 1.00},
+    "car":  {"motorway": 1.09, "arterial": 1.18, "local": 0.84,
+             "cycleish": 0.52, "footonly": 1.00},
 }
 
 # Seconds spent at each junction crossed. Free-flow speeds with no stopping cost was the
 # single largest error in the first calibration; ORS.md had already recorded a fitted
 # AVERAGE of 22 km/h for driving against free-flow figures three to four times that, and
 # most of that gap is stopping rather than cruising slower.
-JUNCTION_PENALTY_S = {"foot": 0.2, "bike": 0.2, "car": 2.8}
+# Foot rose from 0.2 to 4.2 s with the outback sample, which reads oddly until you
+# think about what a junction is on foot: a kerb and a crossing, and 4 s of waiting
+# is about right. It is 3.5 min on a 36 min walk.
+JUNCTION_PENALTY_S = {"foot": 4.2, "bike": 0.2, "car": 2.6}
 
 BUCKET = {
     "motorway": ("motorway", "motorway_link", "trunk", "trunk_link"),
