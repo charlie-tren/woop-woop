@@ -38,7 +38,7 @@ from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import cKDTree
 
 sys.path.insert(0, "build")
-from graph import CLASSES, SPEEDS
+from graph import CLASSES, JUNCTION_PENALTY_S, SPEEDS, speed_kmh
 
 ORIGIN = (-33.8688, 151.2093)          # Sydney CBD, the default view
 BUDGETS = (15, 30, 45, 60)
@@ -48,7 +48,10 @@ KLAT = 111195.0
 def local(lat, lon, a, b, cls, length, oneway, mode, radius_m):
     """The mode's sub-graph within a radius, as a cost matrix in seconds."""
     ok = np.array([mode in SPEEDS[c] for c in CLASSES])
-    spd = np.array([SPEEDS[c].get(mode, 0.0) for c in CLASSES]) * 1000.0 / 3600.0
+    # FITTED speeds, not the raw table. build/fit_speeds.py fitted bucket multipliers and
+    # a junction penalty against routed Valhalla times; building the matrix from raw
+    # free-flow values meant this script judged a model the app does not use.
+    spd = np.array([speed_kmh(c, mode) for c in CLASSES]) * 1000.0 / 3600.0
     klon = KLAT * np.cos(np.radians(ORIGIN[0]))
     d = np.hypot((lat - ORIGIN[0]) * KLAT, (lon - ORIGIN[1]) * klon)
     near = d < radius_m
@@ -148,14 +151,29 @@ def main():
         if PEAK_EDGES is not None:
             pe = PEAK_EDGES
             la_, lb_ = remap[pe["edge_a"]], remap[pe["edge_b"]]
-            spd_cls = np.array([SPEEDS[c].get(mode, 0.0) for c in CLASSES]) / 3.6
-            v = spd_cls[pe["cls"]]
+            # The FITTED speed, matching what the app would use. The raw per-class table
+            # is free-flow with no stopping cost, which is what made driving reach 2,811
+            # peaks against ORS's 1,108 - a difference in the speed model being read as a
+            # difference in geometry.
+            v = np.array([speed_kmh(c, mode) for c in CLASSES]) / 3.6
+            v = v[pe["cls"]]
             ok = (la_ >= 0) & (lb_ >= 0) & (v > 0)
             ok &= np.isfinite(secs[np.clip(la_, 0, len(secs) - 1)])
+            # Matched on COORDINATE: peak_edges is keyed that way because an index into
+            # peaks.bin does not survive a re-merge.
+            pkey = (pe["lat_e5"].astype(np.int64) * 100_000_000
+                    + pe["lon_e5"].astype(np.int64))
+            here = (np.rint(plat * 1e5).astype(np.int64) * 100_000_000
+                    + np.rint(plon * 1e5).astype(np.int64))
+            order = np.argsort(here)
+            pos = np.searchsorted(here[order], pkey)
+            pos = np.clip(pos, 0, len(order) - 1)
+            row = order[pos]
+            ok &= here[row] == pkey
             if ok.any():
                 ca = secs[la_[ok]] + pe["d_from_a"][ok] / v[ok]
                 cb = secs[lb_[ok]] + pe["d_from_b"][ok] / v[ok]
-                pcost[pe["peak"][ok]] = np.minimum(ca, cb)
+                pcost[row[ok]] = np.minimum(ca, cb)
                 exact = int(ok.sum())
         print(f"  exact-cost peaks in range: {exact:,} of {c:,} "
               f"({100.0 * exact / max(c, 1):.1f}%); the rest keep the run in")

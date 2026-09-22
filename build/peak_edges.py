@@ -16,6 +16,12 @@ intermediate vertices still exist.
 
 WHAT THIS WRITES, per peak that lands on a routable way:
 
+    lat_e5, lon_e5     the peak's coordinate, scaled as peaks.bin stores it. This is the
+                       KEY, and it is not an index for a reason: peak_edges was first
+                       written keyed on the peak's position in peaks.bin, the merge stage
+                       then re-thinned that file, and 99.7% of the records silently came
+                       to point at a different peak. An index into a regenerated file is
+                       not an identity.
     edge_a, edge_b     the junction node indices, matching graph.npz's own indexing
     d_from_a           metres along the way's polyline from edge_a
     d_from_b           metres along it from edge_b (not length - d_from_a when the peak
@@ -190,9 +196,15 @@ def main():
 
     ids = np.array(sorted(h.hit), dtype=np.int64)
     rows = np.array([h.hit[i] for i in ids], dtype=np.float64)
+    # KEYED ON COORDINATE, NOT INDEX. An index into peaks.bin is not an identity - the
+    # merge stage re-thins and re-sorts that file, and doing this by index once made
+    # 99.7% of the records point at a different peak with nothing in the output to show
+    # it. The scaled integer coordinates are exactly what the .bin stores, so a consumer
+    # matches with no float comparison.
     np.savez_compressed(
         OUT,
-        peak=ids,
+        lat_e5=np.rint(plat[ids] * 1e5).astype(np.int32),
+        lon_e5=np.rint(plon[ids] * 1e5).astype(np.int32),
         edge_a=rows[:, 0].astype(np.int64),
         edge_b=rows[:, 1].astype(np.int64),
         d_from_a=rows[:, 2].astype(np.float32),
@@ -201,7 +213,8 @@ def main():
         cls=rows[:, 5].astype(np.uint8),
     )
     pct = 100.0 * len(ids) / len(plat)
-    print(f"wrote {OUT}: {len(ids):,} of {len(plat):,} peaks ({pct:.1f}%)")
+    print(f"wrote {OUT}: {len(ids):,} of {len(plat):,} peaks ({pct:.1f}%), "
+          "keyed on coordinate")
     print(f"  off_m  median {np.median(rows[:, 4]):.1f} m   "
           f"p90 {np.percentile(rows[:, 4], 90):.1f} m   max {rows[:, 4].max():.1f} m")
     print(f"total {time.time() - t0:.0f}s")

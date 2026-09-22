@@ -1,5 +1,5 @@
 {
- "count": 415448,
+ "count": 415533,
  "coord_scale": 100000.0,
  "dist_scale_m": 10,
  "on_network": true,
@@ -47,5 +47,16 @@
   ],
   "on": "road"
  },
- "water_sieve": "assembled polygons, osmium areas + shapely"
+ "bike": {
+  "count": 79984,
+  "max_m": 168439.90625,
+  "file": "peaks-bike.bin",
+  "measured_to": [
+   "aero",
+   "building",
+   "power",
+   "rail"
+  ],
+  "on": "road or way"
+ }
 }
