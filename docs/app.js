@@ -49,6 +49,7 @@ const WALK_KMH = 5.0;
  * the walked-leg behaviour, which is wrong but honest, rather than claiming a spot the
  * vehicle cannot reach. */
 function walksToSpot() {
+  if (state.mode === "bike") return !!PB || !!PD;
   return state.mode === "foot" || !!PD;
 }
 
@@ -59,8 +60,14 @@ function walksToSpot() {
  * on a road is 0 m from anything by that definition, so it can never answer "where can
  * I drive to" - which is why the drive-only file maximises a different field, with the
  * road excluded from the measurement but required underfoot. The headline changes
- * wording with the file, because it is a different claim. */
+ * wording with the file, because it is a different claim.
+ *
+ * Bike has its own file as of 22/09/2026, and needed one: it had been answering from the
+ * drive file, whose peaks sit on a road, so every cycleway, rail trail and fire trail was
+ * unreachable by Ride - which is most of what makes cycling worth doing. Its surface is
+ * road OR way, measured to the same built set as the drive file. */
 function activeSet() {
+  if (state.mode === "bike" && PB) return PB;
   return state.mode !== "foot" && PD ? PD : P;
 }
 
@@ -205,7 +212,7 @@ function ringBounds(ring) {
   }
   return { s: s, w: w, n: n, e: e };
 }
-let meta, P, PD, comp, map, layers = {};
+let meta, P, PD, PB, comp, map, layers = {};
 
 /* ---------- the coastline, read off the basemap ---------- */
 /* The 250 m mask below is the fallback, not the first choice, because 250 m cannot draw
@@ -617,6 +624,12 @@ async function load() {
 
   // The drive-only file and the land mask are both additions; an older deploy of the
   // data has neither, and the page has to work without them rather than throw.
+  if (meta.bike && meta.bike.count) {
+    try {
+      PB = readPeaks(await (await fetch(DATA + meta.bike.file)).arrayBuffer(),
+                     meta.bike.count);
+    } catch (e) { PB = null; }
+  }
   if (meta.drive && meta.drive.count) {
     try {
       PD = readPeaks(await (await fetch(DATA + meta.drive.file)).arrayBuffer(),
@@ -1038,7 +1051,7 @@ function render() {
 
   box.innerHTML = note + checked + over +
     '<div class="big">' + fmtKm(a.dist_m) + " <span>" +
-      (activeSet() === PD ? "from anything but roads" : "from anything") +
+      (activeSet() === P ? "from anything" : "from anything built") +
       "</span></div>" +
     '<ul class="leg">' +
     "<li><b>" + a.lat.toFixed(4) + ", " + a.lon.toFixed(4) + "</b></li>" +

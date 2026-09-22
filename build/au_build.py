@@ -28,6 +28,11 @@ MIN_DIST_M = 0
 DIST_SCALE_M = 10    # units the packed distances are stored in
 PEAK_DIR = f"{WORK}/peaks"
 DRIVE_DIR = f"{WORK}/drive"
+# Bike peaks live in their own directory and are mined by build/bike_peaks.py,
+# which is a separate stage: chunks_stage skips any chunk whose peak file exists,
+# so folding a third surface into it would force a full re-run of the foot, drive
+# and land work to produce one new file.
+BIKE_DIR = f"{WORK}/bike"
 LAND_DIR = f"{WORK}/land"
 
 # Drive-only peaks sit on the ROAD network, which is far denser than the set of remote
@@ -35,6 +40,10 @@ LAND_DIR = f"{WORK}/land"
 # kilometre of suppression would mine close to a million of them. 2 km halves that and
 # the merge prunes harder still.
 DRIVE_SPACING_M = 2000
+# Matched to the drive spacing rather than the foot spacing: both are vehicle
+# modes covering ground fast enough that 1 km apart would be near-duplicate
+# answers, and the file size follows the count.
+BIKE_SPACING_M = 2000
 
 # The continental land mask shipped for clipping the drawn isochrone.
 #
@@ -288,12 +297,22 @@ def one_chunk(i, box, coarse_ocean, coarse_comp, cg, gg):
     return len(rows)
 
 
-def chunks_stage():
-    cfg = json.load(open(f"{WORK}/chunks.json"))
+def coarse_bits():
+    """The eroded coarse ocean, the component map and the coarse grid.
+
+    Pulled out of chunks_stage so a second mining stage reads the SAME erosion. Two
+    copies of a two-iteration binary erosion is exactly the kind of duplicate that
+    drifts, and a disagreement about which cells are ocean would show up as peaks on
+    open water in one file and not the other.
+    """
     c = np.load(f"{WORK}/coarse.npz")
     cg = Grid(tuple(c["bbox"]), float(c["cell"]))
-    ocean = ndimage.binary_erosion(c["ocean"], iterations=2)
-    comp = c["comp"]
+    return ndimage.binary_erosion(c["ocean"], iterations=2), c["comp"], cg
+
+
+def chunks_stage():
+    cfg = json.load(open(f"{WORK}/chunks.json"))
+    ocean, comp, cg = coarse_bits()
     gg = Grid(AUS, LAND_CELL)
     print(f"land mask grid {gg.w} x {gg.h} at {LAND_CELL:.0f} m")
     total, t0 = 0, time.time()
@@ -491,6 +510,7 @@ def merge(out="docs/data/peaks.json"):
 
     land_meta = merge_land(out)
     drive_meta = merge_drive(out, comp, remap, cg, sizes)
+    bike_meta = merge_bike(out, comp, remap, cg, sizes)
 
     n = len(a)
     blob = b"".join([
@@ -518,7 +538,7 @@ def merge(out="docs/data/peaks.json"):
                  "south": s_, "west": w_, "north": n_, "east": e_,
                  "bytes": 1},
         "max_m": float(a[0, 2]), "area": "Australia",
-        "land": land_meta, "drive": drive_meta,
+        "land": land_meta, "drive": drive_meta, "bike": bike_meta,
     }, open(out, "w"), indent=1)
     for f in (out, out.replace(".json", ".bin"), out.replace(".json", "-comp.bin")):
         print(f"  -> {f}  {os.path.getsize(f)/1024:,.0f} KB")
@@ -594,13 +614,32 @@ def merge_land(out):
 
 
 def merge_drive(out, comp, remap, cg, sizes):
-    """Pack the drive-only peaks - the emptiest place you can park."""
-    if not os.path.isdir(DRIVE_DIR):
-        print("  no drive peaks mined")
+    return merge_vehicle(out, comp, remap, cg, sizes, DRIVE_DIR,
+                         "peaks-drive.bin", "road", "park")
+
+
+def merge_bike(out, comp, remap, cg, sizes):
+    return merge_vehicle(out, comp, remap, cg, sizes, BIKE_DIR,
+                         "peaks-bike.bin", "road or way", "ride to")
+
+
+def merge_vehicle(out, comp, remap, cg, sizes, src, name, on, verb):
+    """Pack a vehicle peak set - somewhere you can stop, having got there by vehicle.
+
+    One function for drive and bike because the packing is identical and only the source
+    directory, the filename and two labels differ. A second copy of forty lines would be
+    a derived duplicate: it cannot be right in one and wrong in the other, so it should
+    not be able to differ.
+
+    Both share the two-tier prune and the zero walk leg. What differs is upstream, in
+    which surface the peaks were mined on - see build/bike_peaks.py.
+    """
+    if not os.path.isdir(src):
+        print(f"  no {name} peaks mined")
         return None
-    rows = [np.load(f"{DRIVE_DIR}/{f}") for f in sorted(os.listdir(DRIVE_DIR))]
+    rows = [np.load(f"{src}/{f}") for f in sorted(os.listdir(src))]
     a = np.concatenate(rows)
-    print(f"  {len(a):,} raw drive peaks")
+    print(f"  {len(a):,} raw {name} peaks")
     a = cap_by_field(a, "built")
 
     # Same two-tier prune as the main set, and for the same reason: without the thinned
@@ -617,7 +656,7 @@ def merge_drive(out, comp, remap, cg, sizes):
     a = a[np.argsort(-a[:, 2])]
     print(f"  {len(strong):,} at or above {KEEP_ALL_ABOVE:.0f} m, "
           f"{len(first):,} thinned below it -> {len(a):,} shipped")
-    print(f"  best park {a[0,2]/1000:.1f} km at {a[0,0]:.4f}, {a[0,1]:.4f}")
+    print(f"  best {verb} {a[0,2]/1000:.1f} km at {a[0,0]:.4f}, {a[0,1]:.4f}")
 
     px = np.clip(((a[:, 1] - cg.west) * cg.m_per_deg_lon / cg.cell).astype(int),
                  0, cg.w - 1)
@@ -634,12 +673,11 @@ def merge_drive(out, comp, remap, cg, sizes):
         np.rint(a[:, 1] * 1e5).astype("<i4").tobytes(),
         cid.astype("<u2").tobytes(),
     ])
-    path = out.replace("peaks.json", "peaks-drive.bin")
+    path = out.replace("peaks.json", name)
     open(path, "wb").write(blob)
     print(f"  -> {path}  {os.path.getsize(path)/1024:,.0f} KB")
-    return {"count": int(len(a)), "max_m": float(a[0, 2]),
-            "file": "peaks-drive.bin",
-            "measured_to": sorted(BUILT), "on": "road"}
+    return {"count": int(len(a)), "max_m": float(a[0, 2]), "file": name,
+            "measured_to": sorted(BUILT), "on": on}
 
 
 if __name__ == "__main__":
