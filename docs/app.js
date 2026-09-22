@@ -618,24 +618,46 @@ function readPeaks(buf, n) {
            lat: lat, lon: lon, d: d, off: off, alat: alat, alon: alon, c: c };
 }
 
+/* Fetch a vehicle peak file the first time its mode is chosen.
+ *
+ * Returns the set, or null if this deploy has no such file - an older data build has
+ * neither, and the page has to work without them rather than throw. In-flight promises
+ * are cached as well as results, so switching Ride -> Drive -> Ride does not start the
+ * same fetch twice. */
+const vehiclePending = {};
+
+async function loadVehicleSet(which) {
+  const m = meta && meta[which];
+  if (!m || !m.count) return null;
+  if (which === "bike" && PB) return PB;
+  if (which === "drive" && PD) return PD;
+  if (!vehiclePending[which]) {
+    vehiclePending[which] = (async () => {
+      try {
+        const buf = await (await fetch(DATA + m.file)).arrayBuffer();
+        const set = readPeaks(buf, m.count);
+        if (which === "bike") PB = set; else PD = set;
+        return set;
+      } catch (e) {
+        return null;
+      }
+    })();
+  }
+  return vehiclePending[which];
+}
+
 async function load() {
   meta = await (await fetch(DATA + "peaks.json")).json();
   P = readPeaks(await (await fetch(DATA + "peaks.bin")).arrayBuffer(), meta.count);
 
-  // The drive-only file and the land mask are both additions; an older deploy of the
-  // data has neither, and the page has to work without them rather than throw.
-  if (meta.bike && meta.bike.count) {
-    try {
-      PB = readPeaks(await (await fetch(DATA + meta.bike.file)).arrayBuffer(),
-                     meta.bike.count);
-    } catch (e) { PB = null; }
-  }
-  if (meta.drive && meta.drive.count) {
-    try {
-      PD = readPeaks(await (await fetch(DATA + meta.drive.file)).arrayBuffer(),
-                     meta.drive.count);
-    } catch (e) { PD = null; }
-  }
+  // The vehicle files are fetched ON DEMAND, not here. Eagerly loading both cost every
+  // visitor 3.1 MB for a question most of them never ask - the page opens on Walk - and
+  // adding the bike file would have taken a cold visit from 6.1 MB to 7.8 MB for nothing.
+  // A mode switch already waits on a network round trip for the isochrone, so the fetch
+  // hides inside a wait the visitor is having anyway.
+  //
+  // The land mask stays eager: it clips the drawn shape on the FIRST answer, so deferring
+  // it would show an unclipped fill spanning water and then correct itself.
   try { await loadLand(); } catch (e) { landBits = null; }
 
   // One byte per cell unless the manifest says otherwise. The component ids are
@@ -1238,10 +1260,23 @@ function refresh() {
   });
 
   document.querySelectorAll(".modes button").forEach((b) => {
-    b.addEventListener("click", () => {
+    b.addEventListener("click", async () => {
       state.mode = b.dataset.mode;
       document.querySelectorAll(".modes button").forEach((o) =>
         o.setAttribute("aria-pressed", String(o === b)));
+      // AWAIT the peak file before answering. Without this the first click on Ride
+      // answers from whatever is already loaded and then the next refresh changes the
+      // answer under the reader, which looks like the page cannot make up its mind.
+      // A miss returns null and activeSet falls back, so a deploy without the file
+      // still answers.
+      if (state.mode === "bike" || state.mode === "car") {
+        setBusy(true);
+        try {
+          await loadVehicleSet(state.mode === "bike" ? "bike" : "drive");
+        } finally {
+          setBusy(false);
+        }
+      }
       refresh();
     });
   });

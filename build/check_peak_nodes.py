@@ -54,12 +54,39 @@ def main():
         print(f"  {mode:5} p90 run-in is {p90_min:5.1f} min, "
               f"{p90_min / budget * 100:4.0f}% of a {budget} min budget")
 
-    # Falsifiable: this is the claim the calibration rests on, so it fails loudly.
-    frac = float((d <= 15).mean())
-    print(f"\nexact-cost coverage: {frac * 100:.1f}%")
+    # THE MEASUREMENT THAT NOW DECIDES IT. Having a NODE was only ever a proxy for
+    # having an exact cost, and build/peak_edges.py provides the real thing: an edge plus
+    # a distance along the polyline. So the pass criterion moved to edge coverage, and the
+    # node figures above are kept only as the diagnostic they always were.
+    #
+    # Before peak_edges existed this read 26.6% and failed. Node coverage has not changed
+    # and never will - the graph still stores junctions only - which is exactly why
+    # measuring the proxy was the wrong test.
+    try:
+        pe = np.load("data/au/peak_edges.npz")
+    except (FileNotFoundError, OSError):
+        print("\nno data/au/peak_edges.npz - run build/peak_edges.py")
+        print(f"exact-cost coverage: {(d <= 15).mean() * 100:.1f}% (nodes only)")
+        print("FAIL - without it every peak off a junction is charged a straight line")
+        return 1
+
+    matched = len(pe["lat_e5"] if "lat_e5" in pe.files else pe["peak"])
+    frac = matched / len(plat)
+    off = pe["off_m"]
+    print(f"\npeak_edges: {matched:,} of {len(plat):,} peaks on a known edge "
+          f"({frac * 100:.1f}%)")
+    print(f"  off the way: median {np.median(off):.1f} m   p90 "
+          f"{np.percentile(off, 90):.1f} m   max {off.max():.1f} m")
+    # An edge match is only worth having if the peak really is ON that way. A large
+    # residual would mean the match had reached for a way the peak is not standing on.
+    if np.median(off) > 5.0:
+        print("FAIL - matched peaks sit too far off their way for the offset to mean "
+              "anything")
+        return 1
+    print(f"exact-cost coverage: {frac * 100:.1f}%")
     if frac < 0.90:
-        print("FAIL - most peaks are costed by approximation, so a peak-agreement "
-              "comparison against ORS measures the run-in, not the speed model.")
+        print("FAIL - too many peaks are still costed by approximation, so a "
+              "peak-agreement comparison measures the run-in, not the speed model.")
         return 1
     print("PASS")
     return 0
