@@ -54,7 +54,7 @@ def local(lat, lon, a, b, cls, length, oneway, mode, radius_m):
     near = d < radius_m
     em = ok[cls] & near[a] & near[b]
     if not em.any():
-        return None, None, None
+        return None, None, None, None
     keep = np.zeros(len(lat), bool)
     keep[a[em]] = True
     keep[b[em]] = True
@@ -67,7 +67,8 @@ def local(lat, lon, a, b, cls, length, oneway, mode, radius_m):
     cols = np.concatenate([bi, ai[two]])
     vals = np.concatenate([cost, cost[two]])
     n = int(keep.sum())
-    return csr_matrix((vals, (rows, cols)), shape=(n, n)), lat[keep], lon[keep]
+    return (csr_matrix((vals, (rows, cols)), shape=(n, n)),
+            lat[keep], lon[keep], remap)
 
 
 def inside_ring(plat, plon, ring):
@@ -83,6 +84,14 @@ def inside_ring(plat, plon, ring):
         xint = (xj[i] - x[i]) * (plat - y[i]) / (yj[i] - y[i]) + x[i]
         inside ^= cond & (plon < xint)
     return inside
+
+
+PEAK_EDGES = None
+try:
+    _pe = np.load("data/au/peak_edges.npz")
+    PEAK_EDGES = {k: _pe[k] for k in _pe.files}
+except (FileNotFoundError, OSError):
+    pass
 
 
 def main():
@@ -118,7 +127,7 @@ def main():
     for mode in ("foot", "bike", "car"):
         top = max(SPEEDS[k].get(mode, 0) for k in CLASSES)
         radius = top * 1000 / 3600 * max(BUDGETS) * 60 * 1.2
-        gm, glat, glon = local(lat, lon, a, b, cls, length, oneway, mode, radius)
+        gm, glat, glon, remap = local(lat, lon, a, b, cls, length, oneway, mode, radius)
         if gm is None:
             print(f"\n=== {mode} === no local graph")
             continue
@@ -129,6 +138,27 @@ def main():
         tree = cKDTree(np.column_stack((glon * klon, glat * KLAT)))
         pdist, pnode = tree.query(np.column_stack((plon * klon, plat * KLAT)))
         pcost = secs[pnode] + pdist / max(top * 1000 / 3600, 1e-6)
+
+        # EXACT cost for any peak build/peak_edges.py placed on an edge: its time is the
+        # better of the two junctions plus the distance ALONG the way, at that way's own
+        # class speed. No straight-line term at all. Everything else keeps the run in,
+        # and the count of each is printed, because a mixed measurement that does not say
+        # how mixed it is reads as exact.
+        exact = 0
+        if PEAK_EDGES is not None:
+            pe = PEAK_EDGES
+            la_, lb_ = remap[pe["edge_a"]], remap[pe["edge_b"]]
+            spd_cls = np.array([SPEEDS[c].get(mode, 0.0) for c in CLASSES]) / 3.6
+            v = spd_cls[pe["cls"]]
+            ok = (la_ >= 0) & (lb_ >= 0) & (v > 0)
+            ok &= np.isfinite(secs[np.clip(la_, 0, len(secs) - 1)])
+            if ok.any():
+                ca = secs[la_[ok]] + pe["d_from_a"][ok] / v[ok]
+                cb = secs[lb_[ok]] + pe["d_from_b"][ok] / v[ok]
+                pcost[pe["peak"][ok]] = np.minimum(ca, cb)
+                exact = int(ok.sum())
+        print(f"  exact-cost peaks in range: {exact:,} of {c:,} "
+              f"({100.0 * exact / max(c, 1):.1f}%); the rest keep the run in")
 
         print(f"\n=== {mode} ===  graph: {gm.shape[0]:,} nodes within {radius/1000:.0f} km")
         print(f"  {'budget':>8} {'ORS':>8} {'graph':>8} {'both':>8} {'agree':>7}"
