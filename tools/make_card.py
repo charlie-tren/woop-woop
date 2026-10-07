@@ -53,7 +53,9 @@ def copy():
     """Title and description, read out of the page's own head."""
     html = PAGE.read_text(encoding="utf-8")
     title = re.search(r"<title>([^<]+)</title>", html)
-    desc = re.search(r'<meta name="description" content="([^"]+)"', html)
+    # og:description, not the description tag: the tag is written for search and AI
+    # engines (07/10/2026) and the card is something a reader sees.
+    desc = re.search(r'<meta property="og:description" content="([^"]+)"', html)
     if not title or not desc:
         raise SystemExit("docs/index.html has no <title> or no meta description; "
                          "the card would have to invent its own wording")
