@@ -1195,10 +1195,11 @@ function refresh() {
 
   map = L.map("map", { zoomControl: true, preferCanvas: true })
     .setView([state.origin.lat, state.origin.lon], 8);
+  // OpenStreetMap's licence requires the credit; Leaflet's own does not, so it goes.
+  map.attributionControl.setPrefix(false);
   L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
     maxZoom: 17,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">' +
-      "OpenStreetMap</a> contributors",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
   }).addTo(map);
 
   // Imagery sits ON TOP of the map rather than replacing it, so the labels and roads
